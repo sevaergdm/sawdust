@@ -64,23 +64,28 @@ start:
 
 ### Build the reader skeleton
 
-- [ ] Open a fixture. Verify the first 4 bytes are `PAR1`; error clearly if not.
-- [ ] Read the last 8 bytes. The final 4 are the trailing magic; the 4 before
+- [X] Open a fixture. Verify the first 4 bytes are `PAR1`; error clearly if not.
+- [X] Read the last 8 bytes. The final 4 are the trailing magic; the 4 before
       them are the footer length as a little-endian `uint32`.
-- [ ] Compute the metadata byte range: it *ends* 8 bytes before EOF and is
+- [X] Compute the metadata byte range: it *ends* 8 bytes before EOF and is
       `footerLen` bytes long. Print `filesize`, `footerLen`, `metadataStart`.
-- [ ] Sanity-guard the arithmetic: a file shorter than 12 bytes, or a
+- [X] Sanity-guard the arithmetic: a file shorter than 12 bytes, or a
       `footerLen` that would put `metadataStart` before byte 4, is corrupt.
       Say so rather than slicing out of range.
-- [ ] `xxd` the fixture. Look at the first 16 bytes and the last 16 bytes and
-      confirm with your eyes what your code computed.
+- [X] Confirm the footer length with a second, independent tool — do not try to
+      read hex by eye. `tail -c 8 <file> | od -An -tu4 -N4` prints it in decimal
+      (`-t u4` does the little-endian conversion for you), and
+      `tail -c 4 <file>` prints the trailing magic as text. Two tools agreeing
+      is the validation. `xxd`'s text column shows a dot for every byte that is
+      not a printable character, which in a Parquet file is nearly all of them —
+      it can confirm `PAR1` and nothing else.
 
 ### Verify
 
-- [ ] `SELECT * FROM parquet_file_metadata('testdata/basic.parquet');` — you
+- [X] `SELECT * FROM parquet_file_metadata('testdata/basic.parquet');` — you
       cannot check `footerLen` against DuckDB, but you *can* check that your
       metadata range is plausible and that `num_rows` etc. exist inside it.
-- [ ] Try your tool on a non-Parquet file (any `.go` file). It must refuse
+- [X] Try your tool on a non-Parquet file (any `.go` file). It must refuse
       politely, not panic.
 
 **Pain:** you cannot stream a Parquet file from the front. Everything —

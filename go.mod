@@ -2,7 +2,10 @@ module github.com/sevaergdm/sawdust
 
 go 1.26.5
 
-require github.com/parquet-go/parquet-go v0.32.0
+require (
+	github.com/google/go-cmp v0.5.5
+	github.com/parquet-go/parquet-go v0.32.0
+)
 
 require (
 	github.com/andybalholm/brotli v1.1.1 // indirect
