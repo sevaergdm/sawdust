@@ -1,0 +1,9 @@
+bin/
+scratch/
+oracle.csv
+*.parquet.tmp
+
+# Real Parquet must never reach this public repo (see README: fixtures are
+# generated, never copied). Only generated fixtures under testdata/ are allowed.
+*.parquet
+!testdata/**/*.parquet
