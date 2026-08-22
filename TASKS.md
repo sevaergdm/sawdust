@@ -114,27 +114,74 @@ in the project and the reason the rest becomes possible.
 BEFORE the decoder. You will need to hand-encode a few numbers anyway to
 understand the format; putting those bytes in a test is free.
 
-### Build
+### Build — one function or method at a time, each with its own test
 
-- [ ] Read the compact-protocol spec end to end before coding. It is short.
-- [ ] `internal/thrift`: a `Decoder` over a `[]byte` with a position cursor.
-- [ ] Unsigned LEB128 varints: 7 bits per byte, high bit = "more bytes follow".
-      Test: `0x01` → 1, `0x7f` → 127, `0x80 0x01` → 128, and a 10-byte
-      overflow case that must error rather than silently wrap.
-- [ ] Zigzag decoding for signed ints: `(n >> 1) ^ -(n & 1)`. Test both
-      directions of sign, and 0/-1/1 specifically.
-- [ ] Field headers: one byte where the high nibble is the field-id *delta*
-      from the previous field and the low nibble is the type. A high nibble of
-      0 means the id is a zigzag varint following the byte. `0x00` is the
-      struct stop marker.
-- [ ] Type codes: bool-true=1, bool-false=2, i8=3, i16=4, i32=5, i64=6,
-      double=7, binary=8, list=9, set=10, map=11, struct=12.
-- [ ] Binary/string: varint byte length, then that many bytes.
-- [ ] List headers: high nibble = element count if it fits in 4 bits, low
-      nibble = element type; a high nibble of 15 means the count is a varint
-      that follows. Test both the short form and the long form.
-- [ ] A `skip(type)` method that consumes any field without interpreting it.
-      This is what lets you ignore the ~40 fields you don't care about yet.
+Order matters: every item uses the ones above it. Wire type codes, for
+reference throughout: bool-true=1, bool-false=2, i8=3, i16=4, i32=5, i64=6,
+double=7, binary=8 (binary AND string), list=9, set=10, map=11, struct=12
+(structs AND unions), uuid=13.
+
+The field header is described in the spec's **"Struct encoding"** section, not
+in a section of its own.
+
+- [X] Read the compact-protocol spec end to end before coding. It is short.
+- [X] `Decoder` struct in `internal/thrift` — `buf []byte`, `pos int`. The
+      cursor everything else reads from.
+- [X] `Varint() (uint64, error)` — unsigned LEB128. Test: `01`→1, `7f`→127,
+      `80 01`→128, `ac 02`→300, `df 89 03`→50399, plus empty buffer, truncated
+      (`80`), and eleven continuation bytes.
+- [X] `fromZigzag(n uint64) int64` and `toZigzag(n int64) uint64` — pure
+      arithmetic, no buffer involved. Only `fromZigzag` is needed for reading;
+      `toZigzag` exists so a test can round-trip without a hardcoded table.
+- [X] Tests for the zigzag pair: the table (0→0, 1→−1, 2→1, 3→−2, 4→2, 16→8,
+      `1<<63`→4611686018427387904) plus a round-trip over a range of values
+      and the int64 extremes.
+- [X] `Int64() (int64, error)` — `Varint` then `fromZigzag`. This single method
+      covers wire types i16, i32 AND i64: all three are zigzag varints with no
+      per-width difference. Test `04`→2, `03`→−2, `10`→8, `c0 0c`→800, and
+      `80`→error (the varint error must propagate, not be swallowed).
+- [X] `Bytes() ([]byte, error)` — an unsigned `Varint` giving a byte count,
+      then that many raw bytes. Covers wire type 8, which is BOTH binary and
+      string; Thrift does not distinguish them. Test the zero-length case and
+      a claimed length that runs past the end of the buffer.
+- [X] A string accessor, or a deliberate decision not to have one and to
+      convert at the call site instead. Either is fine; decide, don't drift.
+- [X] `FieldHeader(lastFieldID int64) (fieldID int64, typeCode byte, err error)`
+      — reads one byte: high nibble is the delta to add to `lastFieldID`, low
+      nibble is the wire type. A whole byte of `00` is the struct-stop marker;
+      report it by returning type code 0, not an error (a stop is the expected
+      end of every struct, not a failure — give it a name like `TypeStop`). A
+      high nibble of 0 in a non-zero byte means the long form: the field id
+      follows as a zigzag varint, which is a call to `Int64`. No loop in this
+      method — the caller loops until it sees the stop. No state on the
+      Decoder: the previous field id goes in as a parameter and the new one
+      comes back, so the caller holds it in a local variable. Test: `15` from
+      0 → field 1, type 5; `19` from 1 → field 2, type 9; `48` from 0 → field
+      4, type 8; `05 28` from 1 → field 20, type 5, pos +2 (the long form,
+      which real fixtures won't contain); `00` → stop.
+- [ ] Bool fields: the value lives IN the type code — 1 is true, 2 is false —
+      so there are no value bytes to read. Whatever reads field values must
+      handle this before trying to read anything from the buffer.
+- [ ] `ListHeader() (count int, elemType byte, err error)` — one byte: high
+      nibble is the element count, low nibble the element type. A high nibble
+      of 15 means the count is a varint that follows instead. Test both forms;
+      `9c` → 9 elements of type 12.
+- [ ] `Skip(typeCode byte) error` — consume one field's value without
+      interpreting it, using only its type code. This is what lets you walk
+      past the ~40 fields you don't handle, and survive fields added by writers
+      newer than your code. Skipping needs NO field ids: you only need to know
+      how many bytes to consume, and you never read the values, so their
+      identity is irrelevant. So skipping a nested struct is a flat loop with a
+      depth counter — struct-typed field means depth+1, stop byte means
+      depth−1, done when depth returns to 0. No recursion, no stack. Test by
+      skipping a known field and asserting `pos` landed exactly on the next
+      header byte.
+
+**Where the Parquet knowledge goes:** `internal/thrift` must never mention
+Parquet. It knows varints, headers, type codes and nothing else. The knowledge
+that field 3 of `FileMetaData` is `num_rows` belongs in the root `sawdust`
+package, which drives the Decoder. Keeping that line clean is exactly what
+lets the thrift package be tested with hand-typed bytes.
 
 ### Traps to hit deliberately
 
@@ -143,8 +190,11 @@ understand the format; putting those bytes in a test is free.
 - [ ] Decode a bool field by reading a following byte. Observe that there is no
       following byte — the *type code itself* carries the value inside a
       struct. This one silently corrupts every field after it.
-- [ ] Forget to reset the previous-field-id when entering a nested struct.
-      Understand why nesting requires a stack, not a single variable.
+- [ ] Nesting is deliberately NOT a stage 1 problem. Stage 1 decodes three
+      top-level fields of `FileMetaData` and skips everything else, so no
+      nested struct's field numbering ever becomes yours. Revisit when stage 2
+      reads the schema list — and with the field id passed as a parameter, each
+      caller keeps its own, so there may be nothing to add.
 
 ### Verify
 
