@@ -277,3 +277,258 @@ func TestFieldHeader(t *testing.T) {
 		})
 	}
 }
+
+func TestBool(t *testing.T) {
+	tests := []struct {
+		name    string
+		input   byte
+		want    bool
+		wantPos int
+		wantErr bool
+	}{
+		{name: "fieldType: 1", input: 0x01, want: true, wantPos: 0},
+		{name: "fieldType: 2", input: 0x02, want: false, wantPos: 0},
+		{name: "fieldType: 3", input: 0x03, wantErr: true, wantPos: 0},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			d := &Decoder{}
+			got, err := d.Bool(tt.input)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("wantErr: %v, got err: %v", tt.wantErr, err)
+			}
+
+			if d.pos != tt.wantPos {
+				t.Errorf("pos: want %d, got: %d", tt.wantPos, d.pos)
+			}
+
+			if tt.wantErr {
+				return
+			}
+
+			if got != tt.want {
+				t.Errorf("value: want %t, got: %t", tt.want, got)
+			}
+
+		})
+	}
+}
+
+func TestListHeader(t *testing.T) {
+	tests := []struct {
+		name       string
+		buf        []byte
+		wantSize   int
+		wantType   byte
+		wantPos    int
+		wantErr    bool
+		wantErrMsg string
+	}{
+		{name: "9 elements, type 12", buf: []byte{0x9c}, wantSize: 9, wantType: 0x0c, wantPos: 1},
+		{name: "0 elements, type 8", buf: []byte{0x08}, wantSize: 0, wantType: 0x08, wantPos: 1},
+		{name: "14 elements, type 8", buf: []byte{0xe8}, wantSize: 14, wantType: 0x08, wantPos: 1},
+		{name: "15 elements, type 8", buf: []byte{0xf8, 0x0f}, wantSize: 15, wantType: 0x08, wantPos: 2},
+		{name: "long form at maxInt", buf: []byte{0xf8, 0xff, 0xff, 0xff, 0xff, 0x07}, wantSize: math.MaxInt32, wantType: 0x08, wantPos: 6},
+		{name: "error: 14 elements long form", buf: []byte{0xf8, 0x0e}, wantErr: true, wantErrMsg: "long form"},
+		{name: "error: long form no size", buf: []byte{0xf8}, wantErr: true, wantErrMsg: "varint"},
+		{name: "error: invalid type 15", buf: []byte{0x1f}, wantErr: true, wantErrMsg: "invalid element"},
+		{name: "error: invalid type 0", buf: []byte{0x10}, wantErr: true, wantErrMsg: "invalid element"},
+		{name: "error: empty buf", buf: []byte{}, wantErr: true, wantErrMsg: "list header"},
+		{name: "long form exceeds maxInt", buf: []byte{0xf8, 0x80, 0x80, 0x80, 0x80, 0x08}, wantErr: true, wantErrMsg: "exceeds maximum"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			d := &Decoder{buf: tt.buf}
+			gotSize, gotType, err := d.ListHeader()
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("wantErr: %v, got err: %v", tt.wantErr, err)
+			}
+
+			if tt.wantErr {
+				if !strings.Contains(err.Error(), tt.wantErrMsg) {
+					t.Errorf("expected error message to contain '%s', but got %v", tt.wantErrMsg, err)
+				}
+				return
+			}
+
+			if gotSize != tt.wantSize {
+				t.Errorf("size: expected %d, but got %d", tt.wantSize, gotSize)
+			}
+
+			if gotType != tt.wantType {
+				t.Errorf("element type: expected %d, but got %d", tt.wantType, gotType)
+			}
+
+			if d.pos != tt.wantPos {
+				t.Errorf("pos: want %d, got %d", tt.wantPos, d.pos)
+			}
+
+		})
+	}
+}
+
+func TestSkip(t *testing.T) {
+	tests := []struct {
+		name       string
+		buf        []byte
+		inputType  byte
+		wantPos    int
+		wantErr    bool
+		wantErrMsg string
+	}{
+		{name: "boolean 1", inputType: 0x01, wantPos: 0, wantErr: false},
+		{name: "boolean 2", inputType: 0x02, wantPos: 0, wantErr: false},
+		{name: "i8", inputType: 0x03, buf: []byte{0x01}, wantPos: 1, wantErr: false},
+		{name: "error: i8", inputType: 0x03, buf: []byte{}, wantErr: true, wantErrMsg: "insufficient"},
+		{name: "i32", buf: []byte{0x01}, inputType: 0x05, wantPos: 1, wantErr: false},
+		{name: "error: i32", buf: []byte{}, inputType: 0x05, wantPos: 1, wantErr: true, wantErrMsg: "varint"},
+		{name: "double", buf: []byte{0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01}, inputType: 0x07, wantPos: 8, wantErr: false},
+		{name: "error: double", buf: []byte{0x01}, inputType: 0x07, wantErr: true, wantErrMsg: "insufficient"},
+		{name: "binary", buf: []byte{0x03, 0x72, 0x6f, 0x77}, inputType: 0x08, wantPos: 4, wantErr: false},
+		{name: "error: binary", buf: []byte{}, inputType: 0x08, wantErr: true, wantErrMsg: "varint"},
+		{name: "list, size 3, type 5", buf: []byte{0x35, 0x04, 0x06, 0x08}, inputType: 0x09, wantPos: 4, wantErr: false},
+		{name: "error: list, invalid element type", buf: []byte{0x30}, inputType: 0x09, wantErr: true, wantErrMsg: "invalid element type"},
+		{name: "struct, 1 value", buf: []byte{0x15, 0x08, 0x00}, inputType: 0x0c, wantPos: 3, wantErr: false},
+		{name: "error: struct, missing stop", buf: []byte{0x15, 0x01}, inputType: 0x0c, wantErr: true, wantErrMsg: "field header"},
+		{name: "uuid", buf: []byte{0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01}, inputType: 0x0d, wantPos: 16, wantErr: false},
+		{name: "error: uuid", buf: []byte{0x01}, inputType: 0x0d, wantErr: true, wantErrMsg: "insufficient"},
+		{name: "list of struct", buf: []byte{0x2c, 0x15, 0x04, 0x00, 0x15, 0x06, 0x00}, inputType: 0x09, wantPos: 7, wantErr: false},
+		{name: "map, size 1, keytype 5, valuetype 5", buf: []byte{0x01, 0x55, 0x01, 0x01}, inputType: 0x0b, wantPos: 4, wantErr: false},
+		{name: "empty map", buf: []byte{0x00}, inputType: 0x0b, wantPos: 1, wantErr: false},
+		{name: "set, size 3, type 5", buf: []byte{0x35, 0x04, 0x06, 0x08}, inputType: 0x0a, wantPos: 4, wantErr: false},
+		{name: "invalid type", inputType: 0x0e, wantErr: true, wantErrMsg: "invalid type"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			d := &Decoder{buf: tt.buf}
+			err := d.Skip(tt.inputType)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("wantErr: %v, got err: %v", tt.wantErr, err)
+			}
+
+			if tt.wantErr {
+				if !strings.Contains(err.Error(), tt.wantErrMsg) {
+					t.Errorf("expected error message to contain '%s', but got %v", tt.wantErrMsg, err)
+				}
+				return
+			}
+
+			if d.pos != tt.wantPos {
+				t.Errorf("pos: want %d, got %d", tt.wantPos, d.pos)
+			}
+		})
+	}
+}
+
+func TestMapHeader(t *testing.T) {
+	tests := []struct {
+		name          string
+		buf           []byte
+		wantSize      int
+		wantKeyType   byte
+		wantValueType byte
+		wantPos       int
+		wantErr       bool
+		wantErrMsg    string
+	}{
+		{
+			name:          "map with size 3, string keys and i32 values",
+			buf:           []byte{0x03, 0x85},
+			wantSize:      3,
+			wantKeyType:   0x08,
+			wantValueType: 0x05,
+			wantPos:       2,
+			wantErr:       false,
+		},
+		{
+			name:          "empty map",
+			buf:           []byte{0x00},
+			wantSize:      0,
+			wantKeyType:   0x00,
+			wantValueType: 0x00,
+			wantPos:       1,
+			wantErr:       false,
+		},
+		{
+			name:       "empty buffer",
+			buf:        []byte{},
+			wantErr:    true,
+			wantErrMsg: "varint",
+		},
+		{
+			name:          "maximum possible size",
+			buf:           []byte{0xff, 0xff, 0xff, 0xff, 0x07, 0x55},
+			wantSize:      math.MaxInt32,
+			wantKeyType:   0x05,
+			wantValueType: 0x05,
+			wantPos:       6,
+			wantErr:       false,
+		},
+		{
+			name:       "size exceeds maxint",
+			buf:        []byte{0x80, 0x80, 0x80, 0x80, 0x08},
+			wantErr:    true,
+			wantErrMsg: "exceeds",
+		},
+		{
+			name:       "bad key type (too low)",
+			buf:        []byte{0x01, 0x05},
+			wantErr:    true,
+			wantErrMsg: "key type",
+		},
+		{
+			name:       "bad key type (too high)",
+			buf:        []byte{0x01, 0xf5},
+			wantErr:    true,
+			wantErrMsg: "key type",
+		},
+		{
+			name:       "bad value type (too low)",
+			buf:        []byte{0x01, 0x50},
+			wantErr:    true,
+			wantErrMsg: "value type",
+		},
+		{
+			name:       "bad value type (too high)",
+			buf:        []byte{0x01, 0x5f},
+			wantErr:    true,
+			wantErrMsg: "value type",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			d := &Decoder{buf: tt.buf}
+			gotSize, gotKeyType, gotValueType, err := d.MapHeader()
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("wantErr: %v, got err: %v", tt.wantErr, err)
+			}
+
+			if tt.wantErr {
+				if !strings.Contains(err.Error(), tt.wantErrMsg) {
+					t.Errorf("expected error message to contain '%s', but got %v", tt.wantErrMsg, err)
+				}
+				return
+			}
+
+			if gotSize != tt.wantSize {
+				t.Errorf("size: want %d, got %d", tt.wantSize, gotSize)
+			}
+
+			if gotKeyType != tt.wantKeyType {
+				t.Errorf("keyType: want %d, got %d", tt.wantKeyType, gotKeyType)
+			}
+
+			if gotValueType != tt.wantValueType {
+				t.Errorf("valueType: want %d, got %d", tt.wantValueType, gotValueType)
+			}
+
+			if d.pos != tt.wantPos {
+				t.Errorf("pos: want %d, got %d", tt.wantPos, d.pos)
+			}
+		})
+	}
+}

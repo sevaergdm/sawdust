@@ -159,23 +159,36 @@ in a section of its own.
       0 → field 1, type 5; `19` from 1 → field 2, type 9; `48` from 0 → field
       4, type 8; `05 28` from 1 → field 20, type 5, pos +2 (the long form,
       which real fixtures won't contain); `00` → stop.
-- [ ] Bool fields: the value lives IN the type code — 1 is true, 2 is false —
+- [X] Bool fields: the value lives IN the type code — 1 is true, 2 is false —
       so there are no value bytes to read. Whatever reads field values must
       handle this before trying to read anything from the buffer.
-- [ ] `ListHeader() (count int, elemType byte, err error)` — one byte: high
+- [X] `ListHeader() (count int, elemType byte, err error)` — one byte: high
       nibble is the element count, low nibble the element type. A high nibble
       of 15 means the count is a varint that follows instead. Test both forms;
       `9c` → 9 elements of type 12.
-- [ ] `Skip(typeCode byte) error` — consume one field's value without
+- [X] `Skip(typeCode byte) error` — consume one field's value without
       interpreting it, using only its type code. This is what lets you walk
       past the ~40 fields you don't handle, and survive fields added by writers
       newer than your code. Skipping needs NO field ids: you only need to know
       how many bytes to consume, and you never read the values, so their
-      identity is irrelevant. So skipping a nested struct is a flat loop with a
-      depth counter — struct-typed field means depth+1, stop byte means
-      depth−1, done when depth returns to 0. No recursion, no stack. Test by
-      skipping a known field and asserting `pos` landed exactly on the next
-      header byte.
+      identity is irrelevant.
+      A field's value carries no length prefix, so the only way past a struct
+      or a list is to walk through it. Fixed-size types are just `pos +=`
+      (i8 1, double 8, uuid 16, bool-as-field 0). Variable-size types must be
+      read to find their size: i16/i32/i64 a varint, binary a length then that
+      many bytes, a list its header then each element, a struct its fields
+      until the stop byte.
+      **This needs recursion** — `Skip` calls itself for each element of a list
+      and each field of a struct. (An earlier version of this task said a flat
+      loop with a depth counter would do. That was wrong: a depth counter
+      cannot track how many elements remain at each level, and `FileMetaData`
+      field 2 is `list<SchemaElement>` — a list of structs.) Real footers nest
+      about five deep.
+      From the spec's Boolean section: a bool *field* costs 0 bytes (its value
+      is in the type code) but a bool *list element* is sent as an i8, so 1
+      byte each. Skipping the two is not the same.
+      Test by skipping a known field and asserting `pos` landed exactly on the
+      next header byte.
 
 **Where the Parquet knowledge goes:** `internal/thrift` must never mention
 Parquet. It knows varints, headers, type codes and nothing else. The knowledge
@@ -185,12 +198,12 @@ lets the thrift package be tested with hand-typed bytes.
 
 ### Traps to hit deliberately
 
-- [ ] Decode a struct while ignoring the field-id delta (treat every header's
+- [X] Decode a struct while ignoring the field-id delta (treat every header's
       high nibble as an absolute id). Note how quickly field ids drift wrong.
-- [ ] Decode a bool field by reading a following byte. Observe that there is no
+- [X] Decode a bool field by reading a following byte. Observe that there is no
       following byte — the *type code itself* carries the value inside a
       struct. This one silently corrupts every field after it.
-- [ ] Nesting is deliberately NOT a stage 1 problem. Stage 1 decodes three
+- [X] Nesting is deliberately NOT a stage 1 problem. Stage 1 decodes three
       top-level fields of `FileMetaData` and skips everything else, so no
       nested struct's field numbering ever becomes yours. Revisit when stage 2
       reads the schema list — and with the field id passed as a parameter, each
@@ -198,7 +211,7 @@ lets the thrift package be tested with hand-typed bytes.
 
 ### Verify
 
-- [ ] Table-driven tests over hand-built byte slices, with `cmp.Diff`.
+- [X] Table-driven tests over hand-built byte slices, with `cmp.Diff`.
 - [ ] Decode only field 3 (`num_rows`) of the real footer by walking fields and
       skipping the rest. Compare against
       `SELECT num_rows FROM parquet_file_metadata('f.parquet');`
