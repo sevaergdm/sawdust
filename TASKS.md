@@ -269,28 +269,57 @@ written before the code.
 Goal: decode `FileMetaData.schema` into a tree, and render it as something
 comparable to a SQL schema.
 
-### Build
+### Build — one deliverable at a time, each with its own test
 
-- [ ] `internal/format`: Go structs mirroring `FileMetaData` and
-      `SchemaElement`, with the field ids in comments. Decode fields you need;
-      `skip` the rest.
-- [ ] Decode the `schema` list. Note it is *flat* — a depth-first pre-order
-      walk, where each element's `num_children` tells you how many of the
-      following elements are its children. Element 0 is the root and has no type.
-- [ ] Reconstruct the tree from that flat list. A recursive
-      "consume next element and then its `num_children` subtrees" function is
-      the natural shape.
-- [ ] Decode `type` (BOOLEAN=0, INT32=1, INT64=2, INT96=3, FLOAT=4, DOUBLE=5,
-      BYTE_ARRAY=6, FIXED_LEN_BYTE_ARRAY=7) and `repetition_type`
-      (REQUIRED=0, OPTIONAL=1, REPEATED=2) as named enums, not raw ints.
-- [ ] Decode `converted_type` and enough of `logicalType` to distinguish a
-      UTF-8 string from opaque bytes, and a microsecond timestamp from a plain
-      int64.
-- [ ] Compute and store, for every leaf, its `max_definition_level` and
-      `max_repetition_level`: walk from root to leaf, +1 for each OPTIONAL
-      ancestor (definition) and +1 for each REPEATED ancestor (repetition).
-      You will need these in Stage 5; deriving them here is cheaper than
-      retrofitting.
+Everything here is Parquet knowledge, so it stays in the root `sawdust` package
+— expanding `metadata.go`, NOT under `internal/`. Stage 7 needs these types
+exported.
+
+You are **extending** stage 1, not rebuilding it: `FileMetadata` gains a schema
+field, and case 2 in `ReadFileMetadata` stops being a `Skip`.
+
+- [X] A `SchemaElement` struct with **exported** fields, like `FileMetadata`.
+      Field ids from `parquet.thrift` (line 202) in comments. Needed now:
+      thrift `type` (1) → Go `Type`, `repetition_type` (3) → `RepetitionType`,
+      `name` (4) → `Name`, `num_children` (5) → `NumChildren`. The thrift names
+      are lowercase; the Go fields are not — which also sidesteps `type` being
+      a reserved word. `converted_type` (6) and `logicalType` (10) come later
+      in the stage. Optional fields are pointers: `num_children` is absent for
+      leaves, and absent means 0.
+- [X] Named types for the enums rather than raw ints: `PhysicalType`
+      (BOOLEAN=0, INT32=1, INT64=2, INT96=3, FLOAT=4, DOUBLE=5, BYTE_ARRAY=6,
+      FIXED_LEN_BYTE_ARRAY=7) and `FieldRepetitionType` (REQUIRED=0,
+      OPTIONAL=1, REPEATED=2). `PhysicalType` rather than `Type` so the field
+      reads `Type PhysicalType` and pairs sensibly with `LogicalType` later —
+      these are parquet-format's own "physical types". A `String()` method on
+      each means printing shows names instead of numbers.
+- [X] A function decoding ONE `SchemaElement` from a decoder. Same field-header
+      loop shape as `ReadFileMetadata` — worth noticing the repetition, and
+      deciding whether to factor it out. Don't factor on the second instance;
+      decide once there are three.
+- [X] Decode `FileMetaData` field 2 into a `[]SchemaElement`: a `ListHeader`,
+      then that many calls to the above. Add presence tracking — `schema` is
+      `required`, so an absent field 2 is an error.
+- [ ] **Checkpoint before going further:** compare the flat list against
+      `SELECT * FROM parquet_schema('testdata/basic.parquet');` — same count,
+      same order, same names, same types, same `num_children`. Get that green
+      before touching the tree or the logical types.
+- [ ] Reconstruct the tree from the flat list. It is a depth-first pre-order
+      walk: each element's `num_children` says how many of the elements that
+      *follow* it are its children. Element 0 is the root and has no type. The
+      natural shape is recursive — consume one element, then consume that many
+      subtrees — and `Skip` is your precedent for writing one.
+- [ ] `converted_type`, and enough of `logicalType` to tell a UTF-8 string from
+      opaque bytes and a microsecond timestamp from a plain int64. Note
+      `LogicalType` is a **union**: a struct where exactly one field is set, and
+      several possibilities are empty structs (a header then a stop byte). You
+      need field 1 (`StringType`) and field 8 (`TimestampType`, which itself
+      contains a `TimeUnit` union). This is the one new decoding shape in the
+      stage.
+- [ ] Compute and store, per leaf, `max_definition_level` and
+      `max_repetition_level`: walk root to leaf, +1 for each OPTIONAL ancestor
+      (definition) and +1 for each REPEATED ancestor (repetition). Stage 5 needs
+      these; deriving them here is cheaper than retrofitting.
 - [ ] `sawdust schema <file>` prints the tree with type, repetition, logical
       type, and both max levels.
 

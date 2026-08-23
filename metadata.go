@@ -7,9 +7,10 @@ import (
 )
 
 type FileMetadata struct {
-	Version   int64
-	NumRows   int64
-	CreatedBy *string
+	Version   int64           // field id 1, required, version
+	Schema    []SchemaElement // field id 2, required, schema
+	NumRows   int64           // field id 3, required, num_rows
+	CreatedBy *string         // field id 6, optional, created_by
 }
 
 func (m FileMetadata) CreatedByOrEmpty() string {
@@ -23,7 +24,8 @@ func ReadFileMetadata(footer []byte) (FileMetadata, error) {
 	d := thrift.NewDecoder(footer)
 	var lastFieldID, version, numRows int64
 	var createdBy *string
-	var sawVersion, sawNumRows bool
+	var sawVersion, sawNumRows, sawSchema bool
+	var schema []SchemaElement
 
 	for {
 		fieldID, fieldType, err := d.FieldHeader(lastFieldID)
@@ -42,6 +44,24 @@ func ReadFileMetadata(footer []byte) (FileMetadata, error) {
 				return FileMetadata{}, fmt.Errorf("encountered an error parsing version: %w", err)
 			}
 			sawVersion = true
+		case 2:
+			count, elemType, err := d.ListHeader()
+			if err != nil {
+				return FileMetadata{}, fmt.Errorf("encountered an error parsing schema elements: %w", err)
+			}
+
+			if elemType != 12 {
+				return FileMetadata{}, fmt.Errorf("schema list holds type %d, want struct", elemType)
+			}
+
+			for range count {
+				elem, err := readSchemaElement(d)
+				if err != nil {
+					return FileMetadata{}, fmt.Errorf("encountered an error reading schema element: %w", err)
+				}
+				schema = append(schema, elem)
+			}
+			sawSchema = true
 		case 3:
 			numRows, err = d.Int64()
 			if err != nil {
@@ -71,5 +91,14 @@ func ReadFileMetadata(footer []byte) (FileMetadata, error) {
 		return FileMetadata{}, fmt.Errorf("footer is missing required field num_rows (3)")
 	}
 
-	return FileMetadata{Version: version, NumRows: numRows, CreatedBy: createdBy}, nil
+	if !sawSchema {
+		return FileMetadata{}, fmt.Errorf("footer is missing required field schema (2)")
+	}
+
+	return FileMetadata{
+		Version:   version,
+		Schema:    schema,
+		NumRows:   numRows,
+		CreatedBy: createdBy,
+	}, nil
 }

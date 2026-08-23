@@ -12,18 +12,39 @@ const genCreatedBy = "github.com/parquet-go/parquet-go version 0.32.0(build )"
 
 func strPtr(s string) *string { return &s }
 
+func cat(parts ...[]byte) []byte {
+	var out []byte
+	for _, p := range parts {
+		out = append(out, p...)
+	}
+	return out
+}
+
 func TestReadFileMetadataRealFixtures(t *testing.T) {
+	basicSchema := []SchemaElement{
+		{Name: "row", NumChildren: ptr(int64(8))},
+		{Name: "row_number", Type: ptr(TypeInt64), TypeLength: ptr(int64(64)), RepetitionType: ptr(RepetitionRequired)},
+		{Name: "even_row_number", Type: ptr(TypeInt64), TypeLength: ptr(int64(64)), RepetitionType: ptr(RepetitionOptional)},
+		{Name: "rand_id", Type: ptr(TypeByteArray), RepetitionType: ptr(RepetitionRequired)},
+		{Name: "opt_rand_id", Type: ptr(TypeByteArray), RepetitionType: ptr(RepetitionOptional)},
+		{Name: "category", Type: ptr(TypeByteArray), RepetitionType: ptr(RepetitionRequired)},
+		{Name: "rand_float", Type: ptr(TypeDouble), TypeLength: ptr(int64(64)), RepetitionType: ptr(RepetitionRequired)},
+		{Name: "ts", Type: ptr(TypeInt64), TypeLength: ptr(int64(64)), RepetitionType: ptr(RepetitionRequired)},
+		{Name: "is_odd", Type: ptr(TypeBoolean), TypeLength: ptr(int64(1)), RepetitionType: ptr(RepetitionRequired)},
+	}
+
 	tests := []struct {
 		name          string
 		path          string
 		wantVersion   int64
 		wantNumRows   int64
 		wantCreatedBy string
+		wantSchema    []SchemaElement
 	}{
-		{name: "basic", path: "testdata/basic.parquet", wantVersion: 2, wantNumRows: 100, wantCreatedBy: genCreatedBy},
-		{name: "empty", path: "testdata/empty.parquet", wantVersion: 2, wantNumRows: 0, wantCreatedBy: genCreatedBy},
-		{name: "many_rows", path: "testdata/many_rows.parquet", wantVersion: 2, wantNumRows: 300, wantCreatedBy: genCreatedBy},
-		{name: "single_row", path: "testdata/single_row.parquet", wantVersion: 2, wantNumRows: 1, wantCreatedBy: genCreatedBy},
+		{name: "basic", path: "testdata/basic.parquet", wantVersion: 2, wantNumRows: 100, wantCreatedBy: genCreatedBy, wantSchema: basicSchema},
+		{name: "empty", path: "testdata/empty.parquet", wantVersion: 2, wantNumRows: 0, wantCreatedBy: genCreatedBy, wantSchema: basicSchema},
+		{name: "many_rows", path: "testdata/many_rows.parquet", wantVersion: 2, wantNumRows: 300, wantCreatedBy: genCreatedBy, wantSchema: basicSchema},
+		{name: "single_row", path: "testdata/single_row.parquet", wantVersion: 2, wantNumRows: 1, wantCreatedBy: genCreatedBy, wantSchema: basicSchema},
 	}
 
 	for _, tt := range tests {
@@ -71,25 +92,33 @@ func TestReadFileMetadataRealFixtures(t *testing.T) {
 			case *fileMetadata.CreatedBy != tt.wantCreatedBy:
 				t.Errorf("created_by: want %s, got %s", tt.wantCreatedBy, *fileMetadata.CreatedBy)
 			}
+
+			if diff := cmp.Diff(tt.wantSchema, fileMetadata.Schema); diff != "" {
+				t.Errorf("schema mismatch (-want +got):\n%s", diff)
+			}
 		})
 	}
 }
 
 func TestReadFileMetadata(t *testing.T) {
+	schemaField := []byte{0x19, 0x1c, 0x48, 0x01, 0x72, 0x15, 0x00, 0x00}
+	wantSchema := []SchemaElement{{Name: "r", NumChildren: ptr(int64(0))}}
 	tests := []struct {
 		name          string
 		input         []byte
 		wantVersion   int64
 		wantNumRows   int64
 		wantCreatedBy *string
+		wantSchema    []SchemaElement
 		wantErr       bool
 		wantErrMsg    string
 	}{
 		{
 			name:        "version 2, num_rows 100, created_by nil",
-			input:       []byte{0x15, 0x04, 0x26, 0xc8, 0x01, 0x00},
+			input:       cat([]byte{0x15, 0x04}, schemaField, []byte{0x16, 0xc8, 0x01}, []byte{0x00}),
 			wantVersion: 2,
 			wantNumRows: 100,
+			wantSchema:  wantSchema,
 			wantErr:     false,
 		},
 		{
@@ -100,9 +129,10 @@ func TestReadFileMetadata(t *testing.T) {
 		},
 		{
 			name:        "version 2, num_rows 100, created_by nil, skip unknown",
-			input:       []byte{0x15, 0x04, 0x26, 0xc8, 0x01, 0x05, 0x28, 0x02, 0x00},
+			input:       cat([]byte{0x15, 0x04}, schemaField, []byte{0x16, 0xc8, 0x01}, []byte{0x05, 0x28, 0x02}, []byte{0x00}),
 			wantVersion: 2,
 			wantNumRows: 100,
+			wantSchema:  wantSchema,
 			wantErr:     false,
 		},
 		{
@@ -113,11 +143,18 @@ func TestReadFileMetadata(t *testing.T) {
 		},
 		{
 			name:          "version 2, num_rows 100, created_by 'x'",
-			input:         []byte{0x15, 0x04, 0x26, 0xc8, 0x01, 0x38, 0x01, 0x78, 0x00},
+			input:         cat([]byte{0x15, 0x04}, schemaField, []byte{0x16, 0xc8, 0x01}, []byte{0x38, 0x01, 0x78}, []byte{0x00}),
 			wantVersion:   2,
 			wantNumRows:   100,
 			wantCreatedBy: strPtr("x"),
+			wantSchema:    wantSchema,
 			wantErr:       false,
+		},
+		{
+			name:       "error: missing schema",
+			input:      cat([]byte{0x15, 0x04}, []byte{0x26, 0xc8, 0x01}, []byte{0x00}),
+			wantErr:    true,
+			wantErrMsg: "schema",
 		},
 	}
 
