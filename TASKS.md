@@ -212,11 +212,36 @@ lets the thrift package be tested with hand-typed bytes.
 ### Verify
 
 - [X] Table-driven tests over hand-built byte slices, with `cmp.Diff`.
-- [ ] Decode only field 3 (`num_rows`) of the real footer by walking fields and
-      skipping the rest. Compare against
-      `SELECT num_rows FROM parquet_file_metadata('f.parquet');`
-- [ ] Same for field 6, `created_by`. It should name parquet-go and a version.
-- [ ] Fuzz or table-test truncated input: every decoder path must error on a
+
+This step is new production code plus a test, not a test alone. It lives in the
+root `sawdust` package — this is the part that knows field 3 means `num_rows`.
+
+- [X] `metadata.go` in the root package: a `FileMetaData` struct with
+      `Version`, `NumRows`, `CreatedBy`. It gains `Schema` in stage 2 and
+      `RowGroups` in stage 3, so give it its own file.
+- [X] A function taking the footer bytes and returning a `FileMetaData`. Bytes
+      in, struct out — so it can be tested with hand-built bytes as well as
+      real ones. The caller (`main`) already has `ReadFooter`; it allocates
+      `footer.Length` bytes and `ReadAt`s them from `footer.Start`.
+- [X] The loop: a `Decoder` over those bytes, `lastFieldID` starting at 0, then
+      `FieldHeader` → break on `TypeStop` → switch on field id (`Int64` for 1
+      and 3, `Text` for 6, `Skip(typ)` for all the rest) → update
+      `lastFieldID`.
+- [X] Presence tracking for required fields. In `parquet.thrift` fields 1, 2, 3
+      and 4 are `required`, `created_by` (6) is `optional`. A footer with no
+      field 3 must error — and you cannot test for that by checking whether
+      `NumRows` is zero, because `empty.parquet` legitimately has 0 rows. Track
+      presence separately. Same NULL-versus-0 distinction as your observability
+      schema.
+- [X] Test against the real fixtures. `go test` runs with the package directory
+      as the working directory, so `testdata/basic.parquet` works as a relative
+      path. Expected: basic 100, empty 0, single_row 1, many_rows 300; all four
+      `created_by` = `github.com/parquet-go/parquet-go version 0.32.0(build )`.
+- [X] Test with hand-built bytes too: a footer missing field 3, one carrying an
+      unknown high field id that must be skipped cleanly, and a truncated one.
+- [X] Optional: have the CLI print `num_rows` and `created_by` under the offsets
+      it already prints, so you can eyeball a file against DuckDB by hand.
+- [X] Fuzz or table-test truncated input: every decoder path must error on a
       short buffer, never panic. Run `go test -fuzz` on the varint reader for a
       minute if you want the habit.
 

@@ -12,6 +12,10 @@ type Decoder struct {
 	pos int
 }
 
+func NewDecoder(buf []byte) *Decoder {
+	return &Decoder{buf: buf}
+}
+
 func (d *Decoder) Skip(typ byte) error {
 	switch typ {
 	case 0x01, 0x02:
