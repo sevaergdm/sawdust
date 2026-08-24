@@ -44,6 +44,49 @@ var nestedSchema = []SchemaElement{
 	{Name: "tags", Type: ptr(TypeByteArray), RepetitionType: ptr(RepetitionRepeated), ConvertedType: ptr(ConvertedUTF8), LogicalType: StringType{}},
 }
 
+func TestColumns(t *testing.T) {
+	nestedRoot, err := BuildTree(nestedSchema)
+	if err != nil {
+		t.Fatalf("unexpected error building tree: %v", err)
+	}
+
+	gotNestedColumns := Columns(nestedRoot)
+
+	wantNestedColumns := []Column{
+		{Path: []string{"id"}, Element: nestedSchema[1], MaxDefinitionLevel: 0, MaxRepetitionLevel: 0},
+		{Path: []string{"inner", "a"}, Element: nestedSchema[3], MaxDefinitionLevel: 0, MaxRepetitionLevel: 0},
+		{Path: []string{"inner", "b"}, Element: nestedSchema[4], MaxDefinitionLevel: 0, MaxRepetitionLevel: 0},
+		{Path: []string{"opt_in", "a"}, Element: nestedSchema[6], MaxDefinitionLevel: 1, MaxRepetitionLevel: 0},
+		{Path: []string{"opt_in", "b"}, Element: nestedSchema[7], MaxDefinitionLevel: 1, MaxRepetitionLevel: 0},
+		{Path: []string{"tags"}, Element: nestedSchema[8], MaxDefinitionLevel: 1, MaxRepetitionLevel: 1},
+	}
+
+	if diff := cmp.Diff(wantNestedColumns, gotNestedColumns); diff != "" {
+		t.Errorf("nested columns mismatch (-want +got):\n%s", diff)
+	}
+
+	basicRoot, err := BuildTree(basicSchema)
+	if err != nil {
+		t.Fatalf("unexpected error building tree: %v", err)
+	}
+
+	gotBasicColumns := Columns(basicRoot)
+	wantBasicColumns := []Column{
+		{Path: []string{"row_number"}, Element: basicSchema[1], MaxDefinitionLevel: 0, MaxRepetitionLevel: 0},
+		{Path: []string{"even_row_number"}, Element: basicSchema[2], MaxDefinitionLevel: 1, MaxRepetitionLevel: 0},
+		{Path: []string{"rand_id"}, Element: basicSchema[3], MaxDefinitionLevel: 0, MaxRepetitionLevel: 0},
+		{Path: []string{"opt_rand_id"}, Element: basicSchema[4], MaxDefinitionLevel: 1, MaxRepetitionLevel: 0},
+		{Path: []string{"category"}, Element: basicSchema[5], MaxDefinitionLevel: 0, MaxRepetitionLevel: 0},
+		{Path: []string{"rand_float"}, Element: basicSchema[6], MaxDefinitionLevel: 0, MaxRepetitionLevel: 0},
+		{Path: []string{"ts"}, Element: basicSchema[7], MaxDefinitionLevel: 0, MaxRepetitionLevel: 0},
+		{Path: []string{"is_odd"}, Element: basicSchema[8], MaxDefinitionLevel: 0, MaxRepetitionLevel: 0},
+	}
+
+	if diff := cmp.Diff(wantBasicColumns, gotBasicColumns); diff != "" {
+		t.Errorf("basic columns mismatch (-want +got):\n%s", diff)
+	}
+}
+
 func TestBuildTree(t *testing.T) {
 	root, err := BuildTree(nestedSchema)
 	if err != nil {

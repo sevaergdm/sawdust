@@ -2,6 +2,7 @@ package sawdust
 
 import (
 	"fmt"
+	"slices"
 
 	"github.com/sevaergdm/sawdust/internal/thrift"
 )
@@ -345,4 +346,43 @@ func readSchemaElement(d *thrift.Decoder) (SchemaElement, error) {
 		lastFieldID = fieldID
 	}
 	return elem, nil
+}
+
+type Column struct {
+	Path               []string
+	Element            SchemaElement
+	MaxDefinitionLevel int
+	MaxRepetitionLevel int
+}
+
+func Columns(root SchemaNode) []Column {
+	var columns []Column
+	for _, child := range root.Children {
+		columns = collectColumns(child, nil, 0, 0, columns)
+	}
+	return columns
+}
+
+func collectColumns(node SchemaNode, path []string, def, rep int, out []Column) []Column {
+	if rt := node.Element.RepetitionType; rt != nil {
+		if *rt == RepetitionOptional || *rt == RepetitionRepeated {
+			def++
+		}
+
+		if *rt == RepetitionRepeated {
+			rep++
+		}
+	}
+
+	path = append(path, node.Element.Name)
+
+	if len(node.Children) == 0 {
+		out = append(out, Column{Path: slices.Clone(path), Element: node.Element, MaxDefinitionLevel: def, MaxRepetitionLevel: rep})
+		return out
+	}
+
+	for _, child := range node.Children {
+		out = collectColumns(child, path, def, rep, out)
+	}
+	return out
 }

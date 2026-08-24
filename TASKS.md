@@ -279,31 +279,21 @@ field ids in the switch change.
 Every field in `parquet.thrift` has a declared type, and that type tells you
 which primitive to call:
 
-**The declared type also fixes the wire type**, so you never have to guess what
-the low nibble of a field header will be — look it up:
-
-| thrift declares | wire type | in the bytes | you call |
-|---|---|---|---|
-| `i8` | 3 | one raw byte (NOT a varint) | — |
-| `i16` | 4 | zigzag varint | `d.Int64()` |
-| `i32`, and any `enum` | 5 | zigzag varint | `d.Int64()`, then convert |
-| `i64` | 6 | zigzag varint | `d.Int64()` |
-| `double` | 7 | 8 bytes, IEEE 754 little-endian | — |
-| `string` `binary` | 8 | length, then that many bytes | `d.Text()` / `d.Bytes()` |
-| `list<T>` | 9 | ListHeader, then N of T | `d.ListHeader()`, then loop |
-| `set<T>` | 10 | same as a list | `d.ListHeader()`, then loop |
-| `map<K,V>` | 11 | MapHeader, then N pairs | `d.MapHeader()`, then loop |
-| `SomeStruct` | 12 | field headers until stop | your own read function |
-| `SomeUnion` | 12 | same as a struct | your own read function; exactly one field set |
-| `bool` (struct field) | 1 or 2 | nothing — the value IS the wire type | `d.Bool(fieldType)` |
-| `bool` (list element) | 3 | one byte: 1 true, 2 false | — |
-| `optional X` | — | may be absent entirely | pointer field, nil when the case never fires |
-| `required X` | — | must be present | presence bool, checked after the loop |
-
-Check it against bytes you have already decoded: `version` is `i32` and its
-header was `0x15` (type 5); `num_rows` is `i64` → `0x26` (type 6); `name` is
-`string` → `0x48` (type 8); `schema` is `list<SchemaElement>` → `0x19`
-(type 9).
+| thrift declares | in the bytes | you call |
+|---|---|---|
+| `i16` `i32` `i64` | zigzag varint | `d.Int64()` |
+| `SomeEnum` | i32 on the wire | `d.Int64()`, then convert |
+| `i8` | one raw byte (NOT a varint) | — |
+| `bool` (struct field) | nothing — value is in the type code | `d.Bool(fieldType)` |
+| `bool` (list element) | one byte: 1 true, 2 false | — |
+| `string` `binary` | length, then that many bytes | `d.Text()` / `d.Bytes()` |
+| `double` | 8 bytes, IEEE 754 little-endian | — |
+| `SomeStruct` | field headers until stop | your own read function |
+| `SomeUnion` | same as a struct | same loop, exactly one field set |
+| `list<T>` `set<T>` | ListHeader, then N of T | `d.ListHeader()`, then loop |
+| `map<K,V>` | MapHeader, then N pairs | `d.MapHeader()`, then loop |
+| `optional X` | may be absent entirely | pointer field, nil when the case never fires |
+| `required X` | must be present | presence bool, checked after the loop |
 
 **Four rules, applied recursively.** Look up the field's declared type:
 
@@ -432,7 +422,7 @@ field, and case 2 in `ReadFileMetadata` stops being a `Skip`.
       Oracle (run it, don't take my word for any value):
       `duckdb -c "select name, converted_type from parquet_schema('testdata/basic.parquet')"`
 
-- [X] **`logicalType`** — the one new decoding shape in this stage. Work it in
+- [ ] **`logicalType`** — the one new decoding shape in this stage. Work it in
       this order.
 
       **Step 1 — see what is actually in your files.**
@@ -442,7 +432,7 @@ field, and case 2 in `ReadFileMetadata` stops being a `Skip`.
       Three distinct annotations come back: `StringType()`,
       `TimestampType(isAdjustedToUTC=1, unit=TimeUnit(MICROS=MicroSeconds()))`,
       and `IntType(bitWidth=@, isSigned=1)`. (`@` is ASCII 64 — DuckDB is
-      printing an i8 as a character. The value is 64.)
+- [X] **`logicalType`** — the one new decoding shape in this stage. Work it in
 
       **Step 2 — look those up in `parquet.thrift`.**
       `LogicalType` is declared with the keyword `union`, not `struct`. A union
@@ -507,36 +497,17 @@ field, and case 2 in `ReadFileMetadata` stops being a `Skip`.
       "exactly one" rule. Decide whether `readLogicalType` errors or returns
       nil.
 
-      **Step 5 — write them.** Four functions, all in `schema.go`, all the same
-      field-header loop you have written four times.
+      **Step 5 — write them.** All of them are the same field-header loop you
+      have written four times. The field ids you need:
+      - `LogicalType`: 1 = STRING, 8 = TIMESTAMP, 10 = INTEGER; skip the other 16
+      - `TimestampType`: 1 = `isAdjustedToUTC` (bool — `d.Bool(fieldType)`, no
+        value bytes), 2 = `unit`
+      - `TimeUnit`: a union of three empty structs — 1 MILLIS, 2 MICROS,
+        3 NANOS. Nothing to read but the field id, then its stop byte.
 
-      `readLogicalType(d *thrift.Decoder) (LogicalType, error)`
-      Called from a new `case 10` in `readSchemaElement`. `logicalType` is
-      declared `LogicalType`, which is a union, so its wire type is 12 — there
-      is no integer to read here. Its own loop reads one header, and the FIELD
-      ID identifies the variant: 1 = STRING, 8 = TIMESTAMP, 10 = INTEGER,
-      default = `Skip(fieldType)` and return `UnknownType{fieldID}`. Fifteen
-      variants fall through to that default.
-      Returns the interface, so the concrete value is `StringType{}`,
-      `TimestampType{...}`, `IntType{...}` or `UnknownType{...}`.
+      Called from a new `case 10` in `readSchemaElement`, in `schema.go`.
 
-      `readTimestampType(d *thrift.Decoder) (TimestampType, error)`
-      Field 1 `isAdjustedToUTC` — a bool, so its value is in the wire type:
-      `d.Bool(fieldType)`, no value bytes. Field 2 `unit` — a `TimeUnit`, wire
-      type 12, so another read function.
-
-      `readTimeUnit(d *thrift.Decoder) (TimeUnit, error)`
-      A union of three empty structs: 1 MILLIS, 2 MICROS, 3 NANOS. Nothing to
-      read but the field id and the empty struct's stop byte.
-
-      `readIntType(d *thrift.Decoder) (IntType, error)`
-      Field 1 `bitWidth` is `i8` — wire type 3, **one raw byte, not a varint**.
-      The Decoder has no method for that yet, so this item also needs a small
-      `Int8()` on `internal/thrift`: bounds check, read one byte, advance. It is
-      the first new decoder primitive since stage 1. Field 2 `isSigned` is a
-      bool.
-
-- [ ] **Max definition and repetition levels.** These are properties of a
+- [X] **Max definition and repetition levels.** These are properties of a
       *leaf* (only leaves have column chunks), so the natural output is a flat
       list of columns rather than fields sprinkled on the tree:
       ```go
