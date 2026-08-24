@@ -22,26 +22,26 @@ func cat(parts ...[]byte) []byte {
 
 var basicSchema = []SchemaElement{
 	{Name: "row", NumChildren: ptr(int64(8))},
-	{Name: "row_number", Type: ptr(TypeInt64), TypeLength: ptr(int64(64)), RepetitionType: ptr(RepetitionRequired)},
-	{Name: "even_row_number", Type: ptr(TypeInt64), TypeLength: ptr(int64(64)), RepetitionType: ptr(RepetitionOptional)},
-	{Name: "rand_id", Type: ptr(TypeByteArray), RepetitionType: ptr(RepetitionRequired)},
-	{Name: "opt_rand_id", Type: ptr(TypeByteArray), RepetitionType: ptr(RepetitionOptional)},
-	{Name: "category", Type: ptr(TypeByteArray), RepetitionType: ptr(RepetitionRequired)},
+	{Name: "row_number", Type: ptr(TypeInt64), TypeLength: ptr(int64(64)), RepetitionType: ptr(RepetitionRequired), ConvertedType: ptr(ConvertedInt64), LogicalType: IntType{BitWidth: 64, IsSigned: true}},
+	{Name: "even_row_number", Type: ptr(TypeInt64), TypeLength: ptr(int64(64)), RepetitionType: ptr(RepetitionOptional), ConvertedType: ptr(ConvertedInt64), LogicalType: IntType{BitWidth: 64, IsSigned: true}},
+	{Name: "rand_id", Type: ptr(TypeByteArray), RepetitionType: ptr(RepetitionRequired), ConvertedType: ptr(ConvertedUTF8), LogicalType: StringType{}},
+	{Name: "opt_rand_id", Type: ptr(TypeByteArray), RepetitionType: ptr(RepetitionOptional), ConvertedType: ptr(ConvertedUTF8), LogicalType: StringType{}},
+	{Name: "category", Type: ptr(TypeByteArray), RepetitionType: ptr(RepetitionRequired), ConvertedType: ptr(ConvertedUTF8), LogicalType: StringType{}},
 	{Name: "rand_float", Type: ptr(TypeDouble), TypeLength: ptr(int64(64)), RepetitionType: ptr(RepetitionRequired)},
-	{Name: "ts", Type: ptr(TypeInt64), TypeLength: ptr(int64(64)), RepetitionType: ptr(RepetitionRequired)},
+	{Name: "ts", Type: ptr(TypeInt64), TypeLength: ptr(int64(64)), RepetitionType: ptr(RepetitionRequired), ConvertedType: ptr(ConvertedTimestampMicros), LogicalType: TimestampType{IsAdjustedToUTC: true, Unit: TimeMicros}},
 	{Name: "is_odd", Type: ptr(TypeBoolean), TypeLength: ptr(int64(1)), RepetitionType: ptr(RepetitionRequired)},
 }
 
 var nestedSchema = []SchemaElement{
 	{Name: "nestedRow", NumChildren: ptr(int64(4))},
-	{Name: "id", Type: ptr(TypeInt64), TypeLength: ptr(int64(64)), RepetitionType: ptr(RepetitionRequired)},
+	{Name: "id", Type: ptr(TypeInt64), TypeLength: ptr(int64(64)), RepetitionType: ptr(RepetitionRequired), ConvertedType: ptr(ConvertedInt64), LogicalType: IntType{BitWidth: 64, IsSigned: true}},
 	{Name: "inner", NumChildren: ptr(int64(2)), RepetitionType: ptr(RepetitionRequired)},
-	{Name: "a", Type: ptr(TypeInt64), TypeLength: ptr(int64(64)), RepetitionType: ptr(RepetitionRequired)},
-	{Name: "b", Type: ptr(TypeByteArray), RepetitionType: ptr(RepetitionRequired)},
+	{Name: "a", Type: ptr(TypeInt64), TypeLength: ptr(int64(64)), RepetitionType: ptr(RepetitionRequired), ConvertedType: ptr(ConvertedInt64), LogicalType: IntType{BitWidth: 64, IsSigned: true}},
+	{Name: "b", Type: ptr(TypeByteArray), RepetitionType: ptr(RepetitionRequired), ConvertedType: ptr(ConvertedUTF8), LogicalType: StringType{}},
 	{Name: "opt_in", NumChildren: ptr(int64(2)), RepetitionType: ptr(RepetitionOptional)},
-	{Name: "a", Type: ptr(TypeInt64), TypeLength: ptr(int64(64)), RepetitionType: ptr(RepetitionRequired)},
-	{Name: "b", Type: ptr(TypeByteArray), RepetitionType: ptr(RepetitionRequired)},
-	{Name: "tags", Type: ptr(TypeByteArray), RepetitionType: ptr(RepetitionRepeated)},
+	{Name: "a", Type: ptr(TypeInt64), TypeLength: ptr(int64(64)), RepetitionType: ptr(RepetitionRequired), ConvertedType: ptr(ConvertedInt64), LogicalType: IntType{BitWidth: 64, IsSigned: true}},
+	{Name: "b", Type: ptr(TypeByteArray), RepetitionType: ptr(RepetitionRequired), ConvertedType: ptr(ConvertedUTF8), LogicalType: StringType{}},
+	{Name: "tags", Type: ptr(TypeByteArray), RepetitionType: ptr(RepetitionRepeated), ConvertedType: ptr(ConvertedUTF8), LogicalType: StringType{}},
 }
 
 func TestBuildTree(t *testing.T) {

@@ -532,3 +532,37 @@ func TestMapHeader(t *testing.T) {
 		})
 	}
 }
+
+func TestInt8(t *testing.T) {
+	tests := []struct {
+		name       string
+		buf        []byte
+		want       int8
+		wantErr    bool
+		wantErrMsg string
+	}{
+		{name: "byte present", buf: []byte{0x08}, want: 8, wantErr: false},
+		{name: "empty buffer", buf: []byte{}, wantErr: true, wantErrMsg: "int8"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			d := &Decoder{buf: tt.buf}
+			got, err := d.Int8()
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("wantErr: %v, got err: %v", tt.wantErr, err)
+			}
+
+			if tt.wantErr {
+				if !strings.Contains(err.Error(), tt.wantErrMsg) {
+					t.Errorf("expected error message to contain '%s', but got %v", tt.wantErrMsg, err)
+				}
+				return
+			}
+
+			if got != tt.want {
+				t.Errorf("int8: want %d, got %d", tt.want, got)
+			}
+		})
+	}
+}

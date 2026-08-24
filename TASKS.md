@@ -279,21 +279,31 @@ field ids in the switch change.
 Every field in `parquet.thrift` has a declared type, and that type tells you
 which primitive to call:
 
-| thrift declares | in the bytes | you call |
-|---|---|---|
-| `i16` `i32` `i64` | zigzag varint | `d.Int64()` |
-| `SomeEnum` | i32 on the wire | `d.Int64()`, then convert |
-| `i8` | one raw byte (NOT a varint) | — |
-| `bool` (struct field) | nothing — value is in the type code | `d.Bool(fieldType)` |
-| `bool` (list element) | one byte: 1 true, 2 false | — |
-| `string` `binary` | length, then that many bytes | `d.Text()` / `d.Bytes()` |
-| `double` | 8 bytes, IEEE 754 little-endian | — |
-| `SomeStruct` | field headers until stop | your own read function |
-| `SomeUnion` | same as a struct | same loop, exactly one field set |
-| `list<T>` `set<T>` | ListHeader, then N of T | `d.ListHeader()`, then loop |
-| `map<K,V>` | MapHeader, then N pairs | `d.MapHeader()`, then loop |
-| `optional X` | may be absent entirely | pointer field, nil when the case never fires |
-| `required X` | must be present | presence bool, checked after the loop |
+**The declared type also fixes the wire type**, so you never have to guess what
+the low nibble of a field header will be — look it up:
+
+| thrift declares | wire type | in the bytes | you call |
+|---|---|---|---|
+| `i8` | 3 | one raw byte (NOT a varint) | — |
+| `i16` | 4 | zigzag varint | `d.Int64()` |
+| `i32`, and any `enum` | 5 | zigzag varint | `d.Int64()`, then convert |
+| `i64` | 6 | zigzag varint | `d.Int64()` |
+| `double` | 7 | 8 bytes, IEEE 754 little-endian | — |
+| `string` `binary` | 8 | length, then that many bytes | `d.Text()` / `d.Bytes()` |
+| `list<T>` | 9 | ListHeader, then N of T | `d.ListHeader()`, then loop |
+| `set<T>` | 10 | same as a list | `d.ListHeader()`, then loop |
+| `map<K,V>` | 11 | MapHeader, then N pairs | `d.MapHeader()`, then loop |
+| `SomeStruct` | 12 | field headers until stop | your own read function |
+| `SomeUnion` | 12 | same as a struct | your own read function; exactly one field set |
+| `bool` (struct field) | 1 or 2 | nothing — the value IS the wire type | `d.Bool(fieldType)` |
+| `bool` (list element) | 3 | one byte: 1 true, 2 false | — |
+| `optional X` | — | may be absent entirely | pointer field, nil when the case never fires |
+| `required X` | — | must be present | presence bool, checked after the loop |
+
+Check it against bytes you have already decoded: `version` is `i32` and its
+header was `0x15` (type 5); `num_rows` is `i64` → `0x26` (type 6); `name` is
+`string` → `0x48` (type 8); `schema` is `list<SchemaElement>` → `0x19`
+(type 9).
 
 **Four rules, applied recursively.** Look up the field's declared type:
 
@@ -415,36 +425,116 @@ field, and case 2 in `ReadFileMetadata` stops being a `Skip`.
       elements mean the counts don't add up. That second check is what catches
       an off-by-one that would otherwise produce a plausible-looking wrong
       tree.
-- [ ] **`converted_type`** — no new shape. A `case 6` in `readSchemaElement`:
+- [X] **`converted_type`** — no new shape. A `case 6` in `readSchemaElement`:
       `d.Int64()`, convert to `ConvertedType`, take the address. Then extend
       `basicSchema` and `nestedSchema` in the tests, since the decoded output
       genuinely changes.
       Oracle (run it, don't take my word for any value):
       `duckdb -c "select name, converted_type from parquet_schema('testdata/basic.parquet')"`
 
-- [ ] **`logicalType`** — the one new decoding shape in this stage.
-      `readLogicalType(d *thrift.Decoder) (LogicalType, error)` in `schema.go`,
-      called from a `case 10` in `readSchemaElement`. It will need
-      `readTimestampType` and `readTimeUnit` beneath it.
-      A union is encoded identically to a struct, so all three are the same
-      field-header loop you have written four times. Union field ids:
-      1 = STRING, 8 = TIMESTAMP, 10 = INTEGER, and fourteen others.
-      `TimestampType` is fields 1 (`bool isAdjustedToUTC`, value in the type
-      code) and 2 (`TimeUnit`, itself a union of three EMPTY structs — an empty
-      struct on the wire is a single stop byte, so the unit is identified purely
-      by which field id appears: 1 MILLIS, 2 MICROS, 3 NANOS).
-      **Measured 2026-08-24: your fixtures use THREE variants — StringType (1),
-      TimestampType (8) and IntType (10).** Every int64 column carries an
-      IntType annotation, so field 10 is not hypothetical.
-      **Decision to make:** what does an unmodelled variant mean? If field 10
-      is skipped, `LogicalType` ends up non-nil with every payload nil, which is
-      indistinguishable from "no annotation". Options: model `IntType` too; or
-      record the union field id in a `Kind` field so unmodelled variants are
-      still identifiable; or leave the whole thing nil. Pick deliberately.
-      Oracle:
-      `duckdb -c "select name, logical_type from parquet_schema('testdata/basic.parquet')"`
-      Note DuckDB renders `bitWidth=@` — `@` is ASCII 64. It is formatting an
-      i8 as a character; the value is 64.
+- [X] **`logicalType`** — the one new decoding shape in this stage. Work it in
+      this order.
+
+      **Step 1 — see what is actually in your files.**
+      ```sh
+      duckdb -c "select name, logical_type from parquet_schema('testdata/basic.parquet')"
+      ```
+      Three distinct annotations come back: `StringType()`,
+      `TimestampType(isAdjustedToUTC=1, unit=TimeUnit(MICROS=MicroSeconds()))`,
+      and `IntType(bitWidth=@, isSigned=1)`. (`@` is ASCII 64 — DuckDB is
+      printing an i8 as a character. The value is 64.)
+
+      **Step 2 — look those up in `parquet.thrift`.**
+      `LogicalType` is declared with the keyword `union`, not `struct`. A union
+      means **exactly one of its fields is set** — a column's annotation is one
+      thing, never two. On the wire it is encoded identically to a struct (field
+      headers then a stop byte); the difference is that only one field header
+      appears, which is a promise the writer keeps rather than something the
+      bytes enforce.
+      It lists 19 variants; you have met three. Find their definitions and note
+      the shape of each:
+      - `StringType` — an empty struct
+      - `TimestampType` — two fields, one of which is another union
+      - `IntType` — two fields
+
+      **Step 3 — count the functions.** Rule 2 of the recipe: "struct or union
+      → a read function with its own header loop and its own local
+      `lastFieldID`". So every non-empty struct or union in that list needs one,
+      and an empty struct needs nothing but a stop-byte read. Counting them
+      tells you how big this item is before you write any of it. No choice
+      here — it falls out of step 2.
+
+      **Step 4 — Go has no union type, so pick a representation.**
+      The struct-of-pointers version (`String *StringType; Timestamp
+      *TimestampType`, exactly one non-nil) is the obvious approximation, but
+      nothing stops both being set, and it cannot distinguish "a variant I don't
+      model" from "no annotation at all".
+      **Decision taken 2026-08-24: a sealed interface.**
+      ```go
+      type LogicalType interface{ isLogicalType() }
+
+      type StringType struct{}
+      func (StringType) isLogicalType() {}
+
+      type TimestampType struct {
+          IsAdjustedToUTC bool
+          Unit            TimeUnit
+      }
+      func (TimestampType) isLogicalType() {}
+
+      type IntType struct {
+          BitWidth int64
+          IsSigned bool
+      }
+      func (IntType) isLogicalType() {}
+
+      type UnknownType struct{ FieldID int64 }   // a variant we don't decode
+      func (UnknownType) isLogicalType() {}
+      ```
+      Why: "exactly one" becomes a compiler guarantee rather than a comment, and
+      the unexported marker method means only this package can add variants.
+      Read it with a type switch, not nil checks.
+      Two consequences:
+      - `SchemaElement.LogicalType` is `LogicalType`, **not** `*LogicalType` —
+        an interface value is already nilable, so absent needs no extra pointer.
+      - The other 16 variants need no decisions at all: the default branch does
+        `Skip(fieldType)` and returns `UnknownType{FieldID: fieldID}`. Every
+        union member is a struct, so `Skip` consumes whatever the payload was.
+        Adding a real variant later is one type plus one case.
+
+      One case the loop makes possible and you must answer: a union whose bytes
+      are just a stop byte, with no field set at all. That breaks the
+      "exactly one" rule. Decide whether `readLogicalType` errors or returns
+      nil.
+
+      **Step 5 — write them.** Four functions, all in `schema.go`, all the same
+      field-header loop you have written four times.
+
+      `readLogicalType(d *thrift.Decoder) (LogicalType, error)`
+      Called from a new `case 10` in `readSchemaElement`. `logicalType` is
+      declared `LogicalType`, which is a union, so its wire type is 12 — there
+      is no integer to read here. Its own loop reads one header, and the FIELD
+      ID identifies the variant: 1 = STRING, 8 = TIMESTAMP, 10 = INTEGER,
+      default = `Skip(fieldType)` and return `UnknownType{fieldID}`. Fifteen
+      variants fall through to that default.
+      Returns the interface, so the concrete value is `StringType{}`,
+      `TimestampType{...}`, `IntType{...}` or `UnknownType{...}`.
+
+      `readTimestampType(d *thrift.Decoder) (TimestampType, error)`
+      Field 1 `isAdjustedToUTC` — a bool, so its value is in the wire type:
+      `d.Bool(fieldType)`, no value bytes. Field 2 `unit` — a `TimeUnit`, wire
+      type 12, so another read function.
+
+      `readTimeUnit(d *thrift.Decoder) (TimeUnit, error)`
+      A union of three empty structs: 1 MILLIS, 2 MICROS, 3 NANOS. Nothing to
+      read but the field id and the empty struct's stop byte.
+
+      `readIntType(d *thrift.Decoder) (IntType, error)`
+      Field 1 `bitWidth` is `i8` — wire type 3, **one raw byte, not a varint**.
+      The Decoder has no method for that yet, so this item also needs a small
+      `Int8()` on `internal/thrift`: bounds check, read one byte, advance. It is
+      the first new decoder primitive since stage 1. Field 2 `isSigned` is a
+      bool.
 
 - [ ] **Max definition and repetition levels.** These are properties of a
       *leaf* (only leaves have column chunks), so the natural output is a flat

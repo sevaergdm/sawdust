@@ -231,6 +231,15 @@ func (d *Decoder) Int64() (int64, error) {
 	return fromZigzag(v), nil
 }
 
+func (d *Decoder) Int8() (int8, error) {
+	if d.pos >= len(d.buf) {
+		return 0, fmt.Errorf("int8 is truncated")
+	}
+	b := d.buf[d.pos]
+	d.pos++
+	return int8(b), nil
+}
+
 // Bytes reads a length-prefixed byte string. The returned slice shares memory with the decoder's
 // buffer, so callers that keep the value beyond the decode should copy it or use Text() instead
 func (d *Decoder) Bytes() ([]byte, error) {
