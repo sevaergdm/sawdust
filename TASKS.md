@@ -264,6 +264,75 @@ written before the code.
 
 ---
 
+## The decoding recipe (reference for stages 2–5)
+
+**On the wire there is only one kind of struct.** `FileMetaData`,
+`SchemaElement`, `TimestampType`, `RowGroup` — every one of them is "field
+headers until a stop byte". The bytes don't say which struct they are. The
+names, the field meanings and which ids matter live entirely in
+`parquet.thrift`. Unions are encoded identically to structs, so they decode
+with the same loop.
+
+So: write one struct decoder and you have the shape of all of them. Only the
+field ids in the switch change.
+
+Every field in `parquet.thrift` has a declared type, and that type tells you
+which primitive to call:
+
+| thrift declares | in the bytes | you call |
+|---|---|---|
+| `i16` `i32` `i64` | zigzag varint | `d.Int64()` |
+| `SomeEnum` | i32 on the wire | `d.Int64()`, then convert |
+| `i8` | one raw byte (NOT a varint) | — |
+| `bool` (struct field) | nothing — value is in the type code | `d.Bool(fieldType)` |
+| `bool` (list element) | one byte: 1 true, 2 false | — |
+| `string` `binary` | length, then that many bytes | `d.Text()` / `d.Bytes()` |
+| `double` | 8 bytes, IEEE 754 little-endian | — |
+| `SomeStruct` | field headers until stop | your own read function |
+| `SomeUnion` | same as a struct | same loop, exactly one field set |
+| `list<T>` `set<T>` | ListHeader, then N of T | `d.ListHeader()`, then loop |
+| `map<K,V>` | MapHeader, then N pairs | `d.MapHeader()`, then loop |
+| `optional X` | may be absent entirely | pointer field, nil when the case never fires |
+| `required X` | must be present | presence bool, checked after the loop |
+
+**Four rules, applied recursively.** Look up the field's declared type:
+
+1. **Primitive** → call the matching method.
+2. **Struct or union** → a read function with its own header loop and its own
+   local `lastFieldID`, applying these rules to its own fields.
+3. **List or map** → read the header, then apply these rules to each element.
+4. **Optional** → pointer. **Required** → presence bool.
+
+One decoder walks the whole footer once, front to back. Functions take turns
+driving it; pass `*thrift.Decoder` (never a copy) so the cursor stays shared.
+A read function returns with the cursor just past its own stop byte.
+
+## The test-tier rule (decide once, not per test)
+
+| what's under test | input | expected values come from |
+|---|---|---|
+| a pure function over Go values | literals, no files | hand-computed |
+| a decoder over bytes | hand-built byte literals | the spec, or hand-decoded |
+| end to end | real fixtures in `testdata/` | DuckDB |
+
+Three standing rules on top of that:
+
+- **One test function per unit under test.** If a failure could come from two
+  different functions, split it. `BuildTree` takes a `[]SchemaElement`, so it
+  gets literals and no file — a decoder bug then fails only the decoder's test.
+- **Expected values never come from your own code's output.** If you ran it and
+  wrote down what it printed, the test proves only that the code agrees with
+  itself.
+- **Hand-built inputs are for cases real files cannot produce** — a missing
+  required field, a corrupt length, an unknown field id, a `num_children` that
+  lies. Not for cases a fixture already covers.
+
+And when a value has no oracle at all — the max definition and repetition
+levels are the first such case — say so in the task and write the hand-computed
+expectation down, rather than leaving it to be re-derived later.
+
+---
+
 ## Stage 2 — The schema tree
 
 Goal: decode `FileMetaData.schema` into a tree, and render it as something
@@ -300,28 +369,130 @@ field, and case 2 in `ReadFileMetadata` stops being a `Skip`.
 - [X] Decode `FileMetaData` field 2 into a `[]SchemaElement`: a `ListHeader`,
       then that many calls to the above. Add presence tracking — `schema` is
       `required`, so an absent field 2 is an error.
-- [ ] **Checkpoint before going further:** compare the flat list against
+- [X] **Checkpoint before going further:** compare the flat list against
       `SELECT * FROM parquet_schema('testdata/basic.parquet');` — same count,
       same order, same names, same types, same `num_children`. Get that green
       before touching the tree or the logical types.
-- [ ] Reconstruct the tree from the flat list. It is a depth-first pre-order
+- [X] **New fixture first: `nested.parquet`.** Your existing fixtures are all
+      depth 1 — every column hangs directly off the root — so the tree and the
+      levels would have nothing to be checked against. A second struct type in
+      `genfix` with a nested struct field, an optional nested struct field, and
+      a `[]string` gives this (verified 2026-08-23):
+
+      ```
+      outer          4 children
+      ├─ id          REQUIRED  leaf
+      ├─ in          REQUIRED  2 children   (group, no type)
+      │  ├─ a        REQUIRED
+      │  └─ b        REQUIRED
+      ├─ opt_in      OPTIONAL  2 children
+      │  ├─ a        REQUIRED
+      │  └─ b        REQUIRED
+      └─ tags        REPEATED  leaf
+      ```
+
+      Why it earns its place: the ROOT's children are elements 1, 2, 5 and 8 —
+      NOT 1, 2, 3, 4. A naive "children are the next N elements" reading breaks
+      immediately, and a depth-1 fixture can never reveal that. It also gives
+      duplicate leaf names (`a` and `b` twice, which is why stage 3's
+      `path_in_schema` is a list, not a name), and two identical-looking
+      elements with different definition levels (`in.a` is 0, `opt_in.a` is 1).
+      Note parquet-go writes `[]string` as a plain REPEATED leaf, not a
+      three-level LIST group — so `tags` stays flat but gives you a max
+      repetition level of 1.
+- [X] Reconstruct the tree from the flat list. It is a depth-first pre-order
       walk: each element's `num_children` says how many of the elements that
-      *follow* it are its children. Element 0 is the root and has no type. The
-      natural shape is recursive — consume one element, then consume that many
-      subtrees — and `Skip` is your precedent for writing one.
-- [ ] `converted_type`, and enough of `logicalType` to tell a UTF-8 string from
-      opaque bytes and a microsecond timestamp from a plain int64. Note
-      `LogicalType` is a **union**: a struct where exactly one field is set, and
-      several possibilities are empty structs (a header then a stop byte). You
-      need field 1 (`StringType`) and field 8 (`TimestampType`, which itself
-      contains a `TimeUnit` union). This is the one new decoding shape in the
-      stage.
-- [ ] Compute and store, per leaf, `max_definition_level` and
-      `max_repetition_level`: walk root to leaf, +1 for each OPTIONAL ancestor
-      (definition) and +1 for each REPEATED ancestor (repetition). Stage 5 needs
-      these; deriving them here is cheaper than retrofitting.
-- [ ] `sawdust schema <file>` prints the tree with type, repetition, logical
-      type, and both max levels.
+      *follow* it are its children — where "follow" means after each preceding
+      subtree has been fully consumed. Element 0 is the root and has no type.
+      The natural shape is recursive — consume one element, then consume that
+      many subtrees, returning the updated index so the caller knows where its
+      next child starts. `Skip` is your precedent. Keep `SchemaElement` as the
+      faithful mirror of the thrift and add a separate `SchemaNode`
+      (element + children) for the derived shape.
+      Two guards: check the index is in range before reading an element (a
+      `num_children` claiming more children than exist must error, not panic),
+      and after the top-level call the index must equal `len(list)` — leftover
+      elements mean the counts don't add up. That second check is what catches
+      an off-by-one that would otherwise produce a plausible-looking wrong
+      tree.
+- [ ] **`converted_type`** — no new shape. A `case 6` in `readSchemaElement`:
+      `d.Int64()`, convert to `ConvertedType`, take the address. Then extend
+      `basicSchema` and `nestedSchema` in the tests, since the decoded output
+      genuinely changes.
+      Oracle (run it, don't take my word for any value):
+      `duckdb -c "select name, converted_type from parquet_schema('testdata/basic.parquet')"`
+
+- [ ] **`logicalType`** — the one new decoding shape in this stage.
+      `readLogicalType(d *thrift.Decoder) (LogicalType, error)` in `schema.go`,
+      called from a `case 10` in `readSchemaElement`. It will need
+      `readTimestampType` and `readTimeUnit` beneath it.
+      A union is encoded identically to a struct, so all three are the same
+      field-header loop you have written four times. Union field ids:
+      1 = STRING, 8 = TIMESTAMP, 10 = INTEGER, and fourteen others.
+      `TimestampType` is fields 1 (`bool isAdjustedToUTC`, value in the type
+      code) and 2 (`TimeUnit`, itself a union of three EMPTY structs — an empty
+      struct on the wire is a single stop byte, so the unit is identified purely
+      by which field id appears: 1 MILLIS, 2 MICROS, 3 NANOS).
+      **Measured 2026-08-24: your fixtures use THREE variants — StringType (1),
+      TimestampType (8) and IntType (10).** Every int64 column carries an
+      IntType annotation, so field 10 is not hypothetical.
+      **Decision to make:** what does an unmodelled variant mean? If field 10
+      is skipped, `LogicalType` ends up non-nil with every payload nil, which is
+      indistinguishable from "no annotation". Options: model `IntType` too; or
+      record the union field id in a `Kind` field so unmodelled variants are
+      still identifiable; or leave the whole thing nil. Pick deliberately.
+      Oracle:
+      `duckdb -c "select name, logical_type from parquet_schema('testdata/basic.parquet')"`
+      Note DuckDB renders `bitWidth=@` — `@` is ASCII 64. It is formatting an
+      i8 as a character; the value is 64.
+
+- [ ] **Max definition and repetition levels.** These are properties of a
+      *leaf* (only leaves have column chunks), so the natural output is a flat
+      list of columns rather than fields sprinkled on the tree:
+      ```go
+      type Column struct {
+          Path               []string   // e.g. ["opt_in", "a"]
+          Element            SchemaElement
+          MaxDefinitionLevel int
+          MaxRepetitionLevel int
+      }
+
+      func Columns(root SchemaNode) []Column   // in schema.go
+      ```
+      One walk from the root, carrying the path and both running counts down
+      each branch, emitting a `Column` at every leaf.
+      **definition** counts every field in the path that is OPTIONAL **or**
+      REPEATED (a repeated field can be empty, so it needs a level to say so);
+      **repetition** counts only the REPEATED ones. The root contributes
+      nothing — it has no repetition type.
+      `Path` is not decoration: stage 3 matches column chunks to columns by
+      `path_in_schema`, which is exactly this, and it is the only way to tell
+      `inner.a` from `opt_in.a`.
+      **There is no DuckDB oracle for the levels** — no `parquet_schema` column
+      exposes them. The check is hand-computed from the rule above. For
+      `nested.parquet`:
+      | path | def | rep |
+      |---|---|---|
+      | id | 0 | 0 |
+      | inner.a | 0 | 0 |
+      | inner.b | 0 | 0 |
+      | opt_in.a | 1 | 0 |
+      | opt_in.b | 1 | 0 |
+      | tags | 1 | 1 |
+
+      And for `basic.parquet`: every leaf 0/0 except `even_row_number` and
+      `opt_rand_id`, which are 1/0.
+      Note `Columns` returns 6 entries for `nested.parquet`, not 9 — groups are
+      not columns.
+
+- [ ] **`sawdust schema <file>`** — printing only, no new decoding. Indent by
+      depth, and print `Type`, `RepetitionType` and `ConvertedType` straight
+      with `%v`: they are `fmt.Stringer`s, and a nil pointer prints `<nil>`
+      rather than panicking. A `String()` method on `LogicalType` is worth
+      adding so it prints like DuckDB's column; guard its own pointer
+      dereferences, because `fmt` cannot do that for you.
+      Print the levels from `Columns`, not the tree, since only leaves have
+      them.
 
 ### Verify
 
@@ -362,17 +533,71 @@ yet — this stage is pure metadata, and it answers real storage questions.
 
 ### Build
 
-- [ ] Decode `RowGroup` (fields: `columns`, `total_byte_size`, `num_rows`,
-      `sorting_columns`, `file_offset`, `total_compressed_size`, `ordinal`).
-- [ ] Decode `ColumnChunk` and its nested `ColumnMetaData`: `type`,
-      `encodings`, `path_in_schema`, `codec`, `num_values`,
-      `total_uncompressed_size`, `total_compressed_size`, `data_page_offset`,
-      `dictionary_page_offset`, `statistics`, `encoding_stats`.
-- [ ] Decode `Statistics`: `null_count`, `distinct_count`, `min_value`,
-      `max_value` — and note that min/max are raw `binary`, encoded per the
-      column's physical type. Interpreting them requires the schema, so pass it
-      in. Also note fields 1 and 2 are the *deprecated* min/max; know which
-      your files use.
+**This is where the scaffolding fades.** Four more structs, all decoded by the
+loop you have now written five times. So `RowGroup` is worked out for you as a
+model, and you fill in the same form for the other three before writing any
+code. Nothing here needs a new technique — only the recipe table and the form.
+
+**The form.** For each struct, five lines:
+
+1. **Struct and field ids** — from `parquet.thrift`.
+2. **Per field: what to call** — a lookup in the decoding recipe table.
+3. **What the function returns** — and its signature.
+4. **Required vs optional** — presence bools vs pointer fields.
+5. **One expected value** — from the oracle, with the command that produced it.
+
+---
+
+#### Worked model: `RowGroup` (thrift line 1050)
+
+**Fields:**
+```
+1: required list<ColumnChunk> columns
+2: required i64              total_byte_size
+3: required i64              num_rows
+4: optional list<SortingColumn> sorting_columns
+5: optional i64              file_offset
+6: optional i64              total_compressed_size
+7: optional i16              ordinal
+```
+
+**Per field:** 1 → `ListHeader` + loop calling `readColumnChunk`. 2, 3, 5, 6, 7
+→ `d.Int64()`. 4 → `Skip` (you don't need sorting columns).
+
+**Signature:** `readRowGroup(d *thrift.Decoder) (RowGroup, error)` in a new
+`rowgroup.go`. Called from a `case 4` in `ReadFileMetadata`, which is a
+`ListHeader` plus a loop — identical to the `case 2` you already wrote.
+
+**Required:** 1, 2, 3 — presence bools. **Optional:** 4, 5, 6, 7 — pointers
+(except 4, which you skip entirely).
+
+**One expected value:**
+```sh
+duckdb -c "select num_rows, num_row_groups from parquet_file_metadata('testdata/many_rows.parquet')"
+```
+`many_rows.parquet` has 3 row groups of 100 rows, so `len(RowGroups)` is 3 and
+each `NumRows` is 100.
+
+---
+
+#### Your turn: fill in the form for these three
+
+Bring the filled forms before writing code. If a form is right, write it
+unassisted; if not, we have caught it at the cheap stage.
+
+- [ ] **`ColumnChunk`** (thrift line 992). Nine fields. You need 1, 2, 3;
+      skip 4–9 (offset/column index pointers and encryption). Note field 3 is a
+      nested struct, not a list.
+- [ ] **`ColumnMetaData`** (thrift line 909). Seventeen fields — the biggest
+      struct in the project, and the one that makes `sawdust stat` possible.
+      You need 1–7, 9, 11, 12. Two fields are `list<enum>` and one is
+      `list<string>`, so this is the first place `ListHeader` feeds something
+      other than structs.
+- [ ] **`Statistics`** (thrift line 267). Nine fields; you need 3, 4, 5, 6.
+      Fields 1 and 2 are the DEPRECATED min/max — check which your files
+      actually write before deciding whether to decode them. Fields 5 and 6 are
+      raw `binary` whose meaning depends on the column's physical type, so
+      interpreting them needs the schema; decoding them does not.
 - [ ] `sawdust stat <file>`: one row per column chunk with path, type, codec,
       encodings, num_values, compressed and uncompressed bytes, the ratio, and
       null_count.

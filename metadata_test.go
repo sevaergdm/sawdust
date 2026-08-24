@@ -20,19 +20,58 @@ func cat(parts ...[]byte) []byte {
 	return out
 }
 
-func TestReadFileMetadataRealFixtures(t *testing.T) {
-	basicSchema := []SchemaElement{
-		{Name: "row", NumChildren: ptr(int64(8))},
-		{Name: "row_number", Type: ptr(TypeInt64), TypeLength: ptr(int64(64)), RepetitionType: ptr(RepetitionRequired)},
-		{Name: "even_row_number", Type: ptr(TypeInt64), TypeLength: ptr(int64(64)), RepetitionType: ptr(RepetitionOptional)},
-		{Name: "rand_id", Type: ptr(TypeByteArray), RepetitionType: ptr(RepetitionRequired)},
-		{Name: "opt_rand_id", Type: ptr(TypeByteArray), RepetitionType: ptr(RepetitionOptional)},
-		{Name: "category", Type: ptr(TypeByteArray), RepetitionType: ptr(RepetitionRequired)},
-		{Name: "rand_float", Type: ptr(TypeDouble), TypeLength: ptr(int64(64)), RepetitionType: ptr(RepetitionRequired)},
-		{Name: "ts", Type: ptr(TypeInt64), TypeLength: ptr(int64(64)), RepetitionType: ptr(RepetitionRequired)},
-		{Name: "is_odd", Type: ptr(TypeBoolean), TypeLength: ptr(int64(1)), RepetitionType: ptr(RepetitionRequired)},
+var basicSchema = []SchemaElement{
+	{Name: "row", NumChildren: ptr(int64(8))},
+	{Name: "row_number", Type: ptr(TypeInt64), TypeLength: ptr(int64(64)), RepetitionType: ptr(RepetitionRequired)},
+	{Name: "even_row_number", Type: ptr(TypeInt64), TypeLength: ptr(int64(64)), RepetitionType: ptr(RepetitionOptional)},
+	{Name: "rand_id", Type: ptr(TypeByteArray), RepetitionType: ptr(RepetitionRequired)},
+	{Name: "opt_rand_id", Type: ptr(TypeByteArray), RepetitionType: ptr(RepetitionOptional)},
+	{Name: "category", Type: ptr(TypeByteArray), RepetitionType: ptr(RepetitionRequired)},
+	{Name: "rand_float", Type: ptr(TypeDouble), TypeLength: ptr(int64(64)), RepetitionType: ptr(RepetitionRequired)},
+	{Name: "ts", Type: ptr(TypeInt64), TypeLength: ptr(int64(64)), RepetitionType: ptr(RepetitionRequired)},
+	{Name: "is_odd", Type: ptr(TypeBoolean), TypeLength: ptr(int64(1)), RepetitionType: ptr(RepetitionRequired)},
+}
+
+var nestedSchema = []SchemaElement{
+	{Name: "nestedRow", NumChildren: ptr(int64(4))},
+	{Name: "id", Type: ptr(TypeInt64), TypeLength: ptr(int64(64)), RepetitionType: ptr(RepetitionRequired)},
+	{Name: "inner", NumChildren: ptr(int64(2)), RepetitionType: ptr(RepetitionRequired)},
+	{Name: "a", Type: ptr(TypeInt64), TypeLength: ptr(int64(64)), RepetitionType: ptr(RepetitionRequired)},
+	{Name: "b", Type: ptr(TypeByteArray), RepetitionType: ptr(RepetitionRequired)},
+	{Name: "opt_in", NumChildren: ptr(int64(2)), RepetitionType: ptr(RepetitionOptional)},
+	{Name: "a", Type: ptr(TypeInt64), TypeLength: ptr(int64(64)), RepetitionType: ptr(RepetitionRequired)},
+	{Name: "b", Type: ptr(TypeByteArray), RepetitionType: ptr(RepetitionRequired)},
+	{Name: "tags", Type: ptr(TypeByteArray), RepetitionType: ptr(RepetitionRepeated)},
+}
+
+func TestBuildTree(t *testing.T) {
+	root, err := BuildTree(nestedSchema)
+	if err != nil {
+		t.Fatalf("unexpected error building tree: %v", err)
 	}
 
+	wantSchemaNode := SchemaNode{
+		Element: nestedSchema[0],
+		Children: []SchemaNode{
+			{Element: nestedSchema[1]},
+			{Element: nestedSchema[2], Children: []SchemaNode{
+				{Element: nestedSchema[3]},
+				{Element: nestedSchema[4]},
+			}},
+			{Element: nestedSchema[5], Children: []SchemaNode{
+				{Element: nestedSchema[6]},
+				{Element: nestedSchema[7]},
+			}},
+			{Element: nestedSchema[8]},
+		},
+	}
+
+	if diff := cmp.Diff(wantSchemaNode, root); diff != "" {
+		t.Errorf("tree mismatch (-want +got):\n%s", diff)
+	}
+}
+
+func TestReadFileMetadataRealFixtures(t *testing.T) {
 	tests := []struct {
 		name          string
 		path          string
@@ -45,6 +84,7 @@ func TestReadFileMetadataRealFixtures(t *testing.T) {
 		{name: "empty", path: "testdata/empty.parquet", wantVersion: 2, wantNumRows: 0, wantCreatedBy: genCreatedBy, wantSchema: basicSchema},
 		{name: "many_rows", path: "testdata/many_rows.parquet", wantVersion: 2, wantNumRows: 300, wantCreatedBy: genCreatedBy, wantSchema: basicSchema},
 		{name: "single_row", path: "testdata/single_row.parquet", wantVersion: 2, wantNumRows: 1, wantCreatedBy: genCreatedBy, wantSchema: basicSchema},
+		{name: "nested", path: "testdata/nested.parquet", wantVersion: 2, wantNumRows: 100, wantCreatedBy: genCreatedBy, wantSchema: nestedSchema},
 	}
 
 	for _, tt := range tests {

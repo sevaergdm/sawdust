@@ -15,13 +15,25 @@ var category = []string{"foo", "bar", "baz", "buzz"}
 
 type row struct {
 	RowNumber     int64     `parquet:"row_number"`
-	EvenRowNumber *int64    `parquet:"even_row_number"`
+	EvenRowNumber *int64    `parquet:"even_row_number,optional"`
 	RandId        string    `parquet:"rand_id"`
-	OptRandId     *string   `parquet:"opt_rand_id"`
+	OptRandId     *string   `parquet:"opt_rand_id,optional"`
 	Category      string    `parquet:"category"`
 	RandFloat     float64   `parquet:"rand_float"`
 	Ts            time.Time `parquet:"ts,timestamp(microsecond)"`
 	IsOdd         bool      `parquet:"is_odd"`
+}
+
+type inner struct {
+	A int64  `parquet:"a"`
+	B string `parquet:"b"`
+}
+
+type nestedRow struct {
+	ID    int64    `parquet:"id"`
+	In    inner    `parquet:"inner"`
+	OptIn *inner   `parquet:"opt_in,optional"`
+	Tags  []string `parquet:"tags"`
 }
 
 // Command genfix generates the Parquet fixtures in testdata/.
@@ -34,6 +46,7 @@ func main() {
 	numRows := flag.Int("num_rows", 100, "number of rows to write to the parquet file")
 	fileName := flag.String("file_name", "", "the name of the file")
 	rowGroupSize := flag.Int64("row_group_size", 0, "the size of the row groups, uses default if not specified")
+	kind := flag.String("kind", "row", "the kind of row to write")
 	flag.Parse()
 	if *outDir == "" {
 		fmt.Fprintf(os.Stderr, "error: no output directory specified\n")
@@ -52,17 +65,25 @@ func main() {
 		os.Exit(1)
 	}
 
-	rows := buildRows(*numRows)
-
 	path := filepath.Join(*outDir, *fileName+".parquet")
-	if err := writeRows(path, rows, *rowGroupSize); err != nil {
+	var err error
+	switch *kind {
+	case "row":
+		err = writeRows(path, buildRows(*numRows), *rowGroupSize)
+	case "nested":
+		err = writeRows(path, buildNestedRows(*numRows), *rowGroupSize)
+	default:
+		err = fmt.Errorf("unknown kind: %s. Only rows and nested accepted", *kind)
+	}
+
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v", err)
 		os.Exit(1)
 	}
 
 }
 
-func writeRows(path string, rows []row, rowGroupSize int64) error {
+func writeRows[T any](path string, rows []T, rowGroupSize int64) error {
 	f, err := os.Create(path)
 	if err != nil {
 		return fmt.Errorf("could not create parquet file '%s': %v", path, err)
@@ -74,7 +95,7 @@ func writeRows(path string, rows []row, rowGroupSize int64) error {
 		options = append(options, parquet.MaxRowsPerRowGroup(rowGroupSize))
 	}
 
-	writer := parquet.NewGenericWriter[row](f, options...)
+	writer := parquet.NewGenericWriter[T](f, options...)
 	_, err = writer.Write(rows)
 	if err != nil {
 		return fmt.Errorf("could not write to '%s': %v", path, err)
@@ -123,6 +144,25 @@ func buildRows(n int) []row {
 		r.RandFloat = randGen.Float64()
 		r.Ts = base.Add(time.Duration(currentRowNumber) * time.Second)
 
+		rows = append(rows, r)
+	}
+	return rows
+}
+
+func buildNestedRows(n int) []nestedRow {
+	rows := make([]nestedRow, 0, n)
+	for i := 1; i <= n; i++ {
+		r := nestedRow{
+			ID: int64(i),
+			In: inner{A: int64(i * 10), B: fmt.Sprintf("in-%04d", i)},
+		}
+
+		if i%2 == 0 {
+			r.OptIn = &inner{A: int64(i * 100), B: fmt.Sprintf("opt-%04d", i)}
+		}
+		for j := 0; j < i%3; j++ {
+			r.Tags = append(r.Tags, fmt.Sprintf("tag-%d-%d", i, j))
+		}
 		rows = append(rows, r)
 	}
 	return rows

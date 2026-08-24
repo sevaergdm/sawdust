@@ -33,3 +33,7 @@ fmt-check:
 .PHONY: lint
 lint: 
 	@$(GOLANGCI_LINT) run --fix
+
+.PHONY: schema
+schema:
+	@duckdb -c "select name, type, type_length, repetition_type, num_children, converted_type, logical_type from parquet_schema('testdata/$(F).parquet')"
