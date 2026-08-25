@@ -820,10 +820,10 @@ unassisted; if not, we have caught it at the cheap stage.
       actually write before deciding whether to decode them. Fields 5 and 6 are
       raw `binary` whose meaning depends on the column's physical type, so
       interpreting them needs the schema; decoding them does not.
-- [ ] `sawdust stat <file>`: one row per column chunk with path, type, codec,
+- [X] `sawdust stat <file>`: one row per column chunk with path, type, codec,
       encodings, num_values, compressed and uncompressed bytes, the ratio, and
       null_count.
-- [ ] Add a per-file summary: total rows, row group count, rows per row group,
+- [X] Add a per-file summary: total rows, row group count, rows per row group,
       and the columns sorted by compressed bytes descending.
 
 ### Measure (record in the README table)
