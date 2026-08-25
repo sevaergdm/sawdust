@@ -4,11 +4,18 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"os"
 )
 
 type Footer struct {
 	Length int64
 	Start  int64
+}
+
+type File struct {
+	Size     int64
+	Footer   Footer
+	Metadata FileMetadata
 }
 
 func ReadFooter(f io.ReaderAt, size int64) (Footer, error) {
@@ -38,4 +45,35 @@ func ReadFooter(f io.ReaderAt, size int64) (Footer, error) {
 	}
 
 	return Footer{Length: footerLength, Start: metadataStart}, nil
+}
+
+func ReadFile(path string) (File, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return File{}, fmt.Errorf("encountered an error opening file %q: %w", path, err)
+	}
+	defer func() { _ = f.Close() }()
+
+	fStat, err := f.Stat()
+	if err != nil {
+		return File{}, fmt.Errorf("could not stat %q: %w", path, err)
+	}
+
+	size := fStat.Size()
+
+	footer, err := ReadFooter(f, size)
+	if err != nil {
+		return File{}, fmt.Errorf("encountered an error reading footer in %q: %v", path, err)
+	}
+
+	footerBytes := make([]byte, footer.Length)
+	if _, err := f.ReadAt(footerBytes, footer.Start); err != nil {
+		return File{}, fmt.Errorf("encountered an error reading from offset in %q: %v", path, err)
+	}
+
+	fileMetadata, err := ReadFileMetadata(footerBytes)
+	if err != nil {
+		return File{}, fmt.Errorf("encountered an error fetching file metadata in %q: %v", path, err)
+	}
+	return File{Size: size, Footer: footer, Metadata: fileMetadata}, nil
 }

@@ -4,58 +4,112 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/sevaergdm/sawdust"
 )
 
 func main() {
-
-	filePath := flag.String("path", "", "path for parquet file to be read")
-	flag.Parse()
-
-	if *filePath == "" {
-		fmt.Fprintf(os.Stderr, "error: must supply a parquet file to read\n")
-		flag.Usage()
+	if len(os.Args) < 2 {
+		usage()
 		os.Exit(2)
 	}
 
-	f, err := os.Open(*filePath)
+	switch os.Args[1] {
+	case "footer":
+		cmdFooter(os.Args[2:])
+	case "schema":
+		cmdSchema(os.Args[2:])
+	default:
+		fmt.Fprintf(os.Stderr, "error: unknown command %q\n", os.Args[1])
+		usage()
+		os.Exit(2)
+	}
+
+}
+
+func usage() {
+	fmt.Fprint(os.Stderr, `usage: sawdust <command> [arguments]
+
+Commands:
+  footer <file>   print the file's byte layout
+  schema <file>   print the schema tree
+`)
+}
+
+func cmdFooter(args []string) {
+	fs := flag.NewFlagSet("footer", flag.ExitOnError)
+	func() { _ = fs.Parse(args) }()
+
+	if fs.NArg() != 1 {
+		fmt.Fprintf(os.Stderr, "usage: sawdust footer <file>\n")
+		os.Exit(2)
+	}
+
+	path := args[0]
+	file, err := sawdust.ReadFile(path)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: could not open %s: %v\n", *filePath, err)
+		fmt.Fprintf(os.Stderr, "could not read %q: %v\n", path, err)
 		os.Exit(1)
 	}
-	defer func() { _ = f.Close() }()
 
-	fStat, err := f.Stat()
+	fmt.Printf("file size: %d bytes\n", file.Size)
+	fmt.Printf("footer length: %d bytes\n", file.Footer.Length)
+	fmt.Printf("metadata start position: %d\n", file.Footer.Start)
+	fmt.Printf("num rows: %d\n", file.Metadata.NumRows)
+	fmt.Printf("version;: %d\n", file.Metadata.Version)
+	fmt.Printf("created by: %q\n", file.Metadata.CreatedByOrEmpty())
+}
+
+func cmdSchema(args []string) {
+	fs := flag.NewFlagSet("schema", flag.ExitOnError)
+	func() { _ = fs.Parse(args) }()
+
+	if fs.NArg() != 1 {
+		fmt.Fprintf(os.Stderr, "usage: sawdust schema <file>\n")
+		os.Exit(2)
+	}
+
+	path := fs.Arg(0)
+	file, err := sawdust.ReadFile(path)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: could not stat %s: %v\n", *filePath, err)
+		fmt.Fprintf(os.Stderr, "error: could not read %q: %v\n", path, err)
 		os.Exit(1)
 	}
 
-	size := fStat.Size()
-
-	footer, err := sawdust.ReadFooter(f, size)
+	root, err := sawdust.BuildTree(file.Metadata.Schema)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: encountered an error reading footer in %s: %v\n", *filePath, err)
+		fmt.Fprintf(os.Stderr, "error: could not build tree: %v\n", err)
 		os.Exit(1)
 	}
 
-	footerBytes := make([]byte, footer.Length)
-	if _, err := f.ReadAt(footerBytes, footer.Start); err != nil {
-		fmt.Fprintf(os.Stderr, "error: encountered an error reading from offset in %s: %v\n", *filePath, err)
-		os.Exit(1)
+	byPath := map[string]sawdust.Column{}
+	for _, c := range sawdust.Columns(root) {
+		byPath[strings.Join(c.Path, ".")] = c
 	}
 
-	fileMetadata, err := sawdust.ReadFileMetadata(footerBytes)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: encountered an error fetching file metadata in %s: %v\n", *filePath, err)
-		os.Exit(1)
+	fmt.Printf("(%s)\n", root.Element.Name)
+	for _, c := range root.Children {
+		printNode(c, 1, nil, byPath)
+	}
+}
+
+func printNode(n sawdust.SchemaNode, depth int, path []string, byPath map[string]sawdust.Column) {
+	path = append(path, n.Element.Name)
+	indent := strings.Repeat("  ", depth)
+
+	if len(n.Children) == 0 {
+		col, ok := byPath[strings.Join(path, ".")]
+		if !ok {
+			fmt.Printf("column %s does not exist in schema", strings.Join(path, "."))
+			return
+		}
+		fmt.Printf("%s%s %v %v  def=%d rep=%d\n", indent, n.Element.Name, n.Element.Type, n.Element.RepetitionType, col.MaxDefinitionLevel, col.MaxRepetitionLevel)
+		return
 	}
 
-	fmt.Printf("file size: %d bytes\n", size)
-	fmt.Printf("footer length: %d bytes\n", footer.Length)
-	fmt.Printf("metadata start position: %d\n", footer.Start)
-	fmt.Printf("num rows: %d\n", fileMetadata.NumRows)
-	fmt.Printf("version;: %d\n", fileMetadata.Version)
-	fmt.Printf("created by: %q\n", fileMetadata.CreatedByOrEmpty())
+	fmt.Printf("%s%s %v\n", indent, n.Element.Name, n.Element.RepetitionType)
+	for _, child := range n.Children {
+		printNode(child, depth+1, path, byPath)
+	}
 }

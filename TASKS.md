@@ -546,22 +546,66 @@ field, and case 2 in `ReadFileMetadata` stops being a `Skip`.
       Note `Columns` returns 6 entries for `nested.parquet`, not 9 — groups are
       not columns.
 
-- [ ] **`sawdust schema <file>`** — printing only, no new decoding. Indent by
-      depth, and print `Type`, `RepetitionType` and `ConvertedType` straight
-      with `%v`: they are `fmt.Stringer`s, and a nil pointer prints `<nil>`
-      rather than panicking. A `String()` method on `LogicalType` is worth
-      adding so it prints like DuckDB's column; guard its own pointer
-      dereferences, because `fmt` cannot do that for you.
-      Print the levels from `Columns`, not the tree, since only leaves have
-      them.
+- [ ] **CLI restructure — a design decision, and the first real one since
+      stage 0.** There is no subcommand machinery: `cmd/sawdust/main.go` reads a
+      `-path` flag and prints five lines. But four task items across stages 2–5
+      assume `sawdust schema`, `sawdust stat` and `sawdust cat`. So decide the
+      shape once, here, rather than four times.
+      Two options:
+      - **Subcommands** — `sawdust schema <file>`. Switch on `os.Args[1]`, with
+        a `flag.FlagSet` per subcommand. More machinery up front; extends to
+        `stat` and `cat` with no further thought.
+      - **A mode flag** — `sawdust -mode schema -path X`. Less restructuring
+        now, gets awkward at three or four modes.
+      Whichever you pick, three things move:
+      - The open / `Stat` / `ReadFooter` / allocate / `ReadAt` /
+        `ReadFileMetadata` sequence is common to every subcommand — and is
+        already duplicated between `main` and two test files. Six lines, four
+        callers. Extract it.
+      - The current five-line output becomes one subcommand of its own
+        (`footer`, or `info`).
+      - `main` becomes dispatch plus error handling, and nothing else.
+      Worth noting where that extracted helper is heading: a
+      `sawdust.ReadFile(path) (FileMetadata, error)` in the library is exactly
+      the convenience wrapper stage 7 wants, and what machine-observability
+      would call. Deciding now whether it lives in `cmd` or in the package is
+      the one part of this that isn't purely mechanical.
+
+- [X] **The schema printer.** No new decoding. Indent by depth from the tree,
+      and print `Type`, `RepetitionType` and `ConvertedType` straight with `%v`
+      — they are all `fmt.Stringer`s, and a nil pointer prints `<nil>` rather
+      than panicking.
+      A `String()` on the `LogicalType` variants is worth adding so they print
+      like DuckDB's column. `UnknownType` already has one; `TimestampType`
+      needs to render its unit, and `IntType` its width and signedness. Those
+      are value receivers on structs with no pointers inside, so there is
+      nothing for `fmt` to fail on.
+      The levels live on `Column`, not on the tree, so either print the leaf
+      rows from `Columns()` or look each leaf up by path while walking.
 
 ### Verify
 
-- [ ] `SELECT * FROM parquet_schema('f.parquet');` — same elements, same order,
+- [X] `SELECT * FROM parquet_schema('f.parquet');` — same elements, same order,
       same `num_children`, same types.
-- [ ] `DESCRIBE SELECT * FROM 'f.parquet';` — your leaf list matches its column
-      list, your OPTIONAL flags match its nullability, and your microsecond
-      timestamp column shows as `TIMESTAMP` there.
+- [X] `DESCRIBE SELECT * FROM 'f.parquet';` — this is the oracle for **logical
+      type resolution**, not for structure. Measured 2026-08-25: `DESCRIBE`
+      reassembles groups back into SQL `STRUCT` types, so on `nested.parquet` it
+      returns FOUR columns (`inner` and `opt_in` shown as
+      `struct(a bigint, b varchar)`), matching the root's children rather than
+      the six leaves. So there are three distinct oracles, checking three
+      different things:
+      | query | shows | count on nested |
+      |---|---|---|
+      | `parquet_schema` | the tree as stored, groups included | 9 |
+      | `parquet_metadata` | one row per leaf column chunk | 6 |
+      | `DESCRIBE` | DuckDB's reconstructed SQL view | 4 |
+      What to check here is that each annotation resolves the way DuckDB
+      resolves it: `BYTE_ARRAY` + `StringType` → `varchar`; `INT64` +
+      `TimestampType{isAdjustedToUTC: true, micros}` → `timestamp with time
+      zone` (the "with time zone" comes from `isAdjustedToUTC`); a REPEATED
+      leaf → `varchar[]`. Your own output prints the PHYSICAL type, so the two
+      are supposed to differ — the check is that the chain is consistent, not
+      that the strings match.
 - [ ] Run it against a real file from the observability agent (all seven
       sources). The `journal` schema is the interesting one: many optionals,
       one string carrying JSON.
