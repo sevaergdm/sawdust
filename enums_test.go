@@ -19,6 +19,10 @@ func TestEnums(t *testing.T) {
 		{"converted unknown", ConvertedType(99), "ConvertedType(99)"},
 		{"timeunit known", TimeMicros, "micros"},
 		{"timeunit unknown", TimeUnit(9), "TimeUnit(9)"},
+		{"encoding known", EncodingALP, "ALP"},
+		{"encoding unknown", Encoding(99), "Encoding(99)"},
+		{"codec known", CodecGZIP, "GZIP"},
+		{"codec unknown", CompressionCodec(99), "CompressionCodec(99)"},
 	}
 
 	for _, tt := range tests {

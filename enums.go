@@ -6,6 +6,8 @@ type PhysicalType int
 type FieldRepetitionType int
 type ConvertedType int
 type TimeUnit int
+type Encoding int
+type CompressionCodec int
 
 const (
 	TypeBoolean           PhysicalType = 0
@@ -47,6 +49,26 @@ const (
 	TimeMillis TimeUnit = 1
 	TimeMicros TimeUnit = 2
 	TimeNanos  TimeUnit = 3
+
+	EncodingPlain                Encoding = 0
+	EncodingPlainDictionary      Encoding = 2 // deprecated
+	EncodingRLE                  Encoding = 3
+	EncodingBitPacked            Encoding = 4 // deprecated
+	EncodingDeltaBinaryPacked    Encoding = 5
+	EncodingDeltaLengthByteArray Encoding = 6
+	EncodingDeltaByteArray       Encoding = 7
+	EncodingRLEDictionary        Encoding = 8
+	EncodingByteStreamSplit      Encoding = 9
+	EncodingALP                  Encoding = 10
+
+	CodecUncompressed CompressionCodec = 0
+	CodecSnappy       CompressionCodec = 1
+	CodecGZIP         CompressionCodec = 2
+	CodecLZO          CompressionCodec = 3
+	CodecBROTLI       CompressionCodec = 4 // deprecated
+	CodecLZ4          CompressionCodec = 5
+	CodecZSTD         CompressionCodec = 6
+	CodecLZ4Raw       CompressionCodec = 7
 )
 
 var physicalTypeName = map[PhysicalType]string{
@@ -123,4 +145,42 @@ func (t TimeUnit) String() string {
 		return s
 	}
 	return fmt.Sprintf("TimeUnit(%d)", t)
+}
+
+var EncodingName = map[Encoding]string{
+	EncodingPlain:                "PLAIN",
+	EncodingPlainDictionary:      "PLAIN_DICTIONARY",
+	EncodingRLE:                  "RLE",
+	EncodingBitPacked:            "BIT_PACKED",
+	EncodingDeltaBinaryPacked:    "DELTA_BINARY_PACKED",
+	EncodingDeltaLengthByteArray: "DELTA_LENGTH_BYTE_ARRAY",
+	EncodingDeltaByteArray:       "DELTA_BYTE_ARRAY",
+	EncodingRLEDictionary:        "RLE_DICTIONARY",
+	EncodingByteStreamSplit:      "BYTE_STREAM_SPLIT",
+	EncodingALP:                  "ALP",
+}
+
+func (e Encoding) String() string {
+	if s, ok := EncodingName[e]; ok {
+		return s
+	}
+	return fmt.Sprintf("Encoding(%d)", e)
+}
+
+var CompressionCodecName = map[CompressionCodec]string{
+	CodecUncompressed: "UNCOMPRESSED",
+	CodecSnappy:       "SNAPPY",
+	CodecGZIP:         "GZIP",
+	CodecLZO:          "LZO",
+	CodecBROTLI:       "BROTLI",
+	CodecLZ4:          "LZ4",
+	CodecZSTD:         "ZSTD",
+	CodecLZ4Raw:       "LZ4_RAW",
+}
+
+func (c CompressionCodec) String() string {
+	if s, ok := CompressionCodecName[c]; ok {
+		return s
+	}
+	return fmt.Sprintf("CompressionCodec(%d)", c)
 }

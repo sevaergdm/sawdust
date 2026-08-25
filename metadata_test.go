@@ -1,6 +1,7 @@
 package sawdust
 
 import (
+	"encoding/binary"
 	"os"
 	"strings"
 	"testing"
@@ -116,18 +117,22 @@ func TestBuildTree(t *testing.T) {
 
 func TestReadFileMetadataRealFixtures(t *testing.T) {
 	tests := []struct {
-		name          string
-		path          string
-		wantVersion   int64
-		wantNumRows   int64
-		wantCreatedBy string
-		wantSchema    []SchemaElement
+		name              string
+		path              string
+		wantVersion       int64
+		wantNumRows       int64
+		wantCreatedBy     string
+		wantSchema        []SchemaElement
+		wantRowGroups     int
+		wantRowsPerGroup  []int
+		wantChunks        int
+		wantRowGroupBytes []int64
 	}{
-		{name: "basic", path: "testdata/basic.parquet", wantVersion: 2, wantNumRows: 100, wantCreatedBy: genCreatedBy, wantSchema: basicSchema},
-		{name: "empty", path: "testdata/empty.parquet", wantVersion: 2, wantNumRows: 0, wantCreatedBy: genCreatedBy, wantSchema: basicSchema},
-		{name: "many_rows", path: "testdata/many_rows.parquet", wantVersion: 2, wantNumRows: 300, wantCreatedBy: genCreatedBy, wantSchema: basicSchema},
-		{name: "single_row", path: "testdata/single_row.parquet", wantVersion: 2, wantNumRows: 1, wantCreatedBy: genCreatedBy, wantSchema: basicSchema},
-		{name: "nested", path: "testdata/nested.parquet", wantVersion: 2, wantNumRows: 100, wantCreatedBy: genCreatedBy, wantSchema: nestedSchema},
+		{name: "basic", path: "testdata/basic.parquet", wantVersion: 2, wantNumRows: 100, wantCreatedBy: genCreatedBy, wantSchema: basicSchema, wantRowGroups: 1, wantRowsPerGroup: []int{100}, wantChunks: 8, wantRowGroupBytes: []int64{4843}},
+		{name: "empty", path: "testdata/empty.parquet", wantVersion: 2, wantNumRows: 0, wantCreatedBy: genCreatedBy, wantSchema: basicSchema, wantRowGroups: 0},
+		{name: "many_rows", path: "testdata/many_rows.parquet", wantVersion: 2, wantNumRows: 300, wantCreatedBy: genCreatedBy, wantSchema: basicSchema, wantRowGroups: 3, wantRowsPerGroup: []int{100, 100, 100}, wantChunks: 8, wantRowGroupBytes: []int64{4843, 4836, 4857}},
+		{name: "single_row", path: "testdata/single_row.parquet", wantVersion: 2, wantNumRows: 1, wantCreatedBy: genCreatedBy, wantSchema: basicSchema, wantRowGroups: 1, wantRowsPerGroup: []int{1}, wantChunks: 8, wantRowGroupBytes: []int64{497}},
+		{name: "nested", path: "testdata/nested.parquet", wantVersion: 2, wantNumRows: 100, wantCreatedBy: genCreatedBy, wantSchema: nestedSchema, wantRowGroups: 1, wantRowsPerGroup: []int{1}, wantChunks: 6, wantRowGroupBytes: []int64{4604}},
 	}
 
 	for _, tt := range tests {
@@ -169,6 +174,10 @@ func TestReadFileMetadataRealFixtures(t *testing.T) {
 				t.Errorf("num_rows: want %d, got %d", tt.wantNumRows, fileMetadata.NumRows)
 			}
 
+			if len(fileMetadata.RowGroups) != tt.wantRowGroups {
+				t.Errorf("row_groups: want %d, got %d", tt.wantRowGroups, len(fileMetadata.RowGroups))
+			}
+
 			switch {
 			case fileMetadata.CreatedBy == nil:
 				t.Errorf("created_by: want %q, got nil", tt.wantCreatedBy)
@@ -185,6 +194,7 @@ func TestReadFileMetadataRealFixtures(t *testing.T) {
 
 func TestReadFileMetadata(t *testing.T) {
 	schemaField := []byte{0x19, 0x1c, 0x48, 0x01, 0x72, 0x15, 0x00, 0x00}
+	rowGroupsField := []byte{0x19, 0x0c}
 	wantSchema := []SchemaElement{{Name: "r", NumChildren: ptr(int64(0))}}
 	tests := []struct {
 		name          string
@@ -198,7 +208,7 @@ func TestReadFileMetadata(t *testing.T) {
 	}{
 		{
 			name:        "version 2, num_rows 100, created_by nil",
-			input:       cat([]byte{0x15, 0x04}, schemaField, []byte{0x16, 0xc8, 0x01}, []byte{0x00}),
+			input:       cat([]byte{0x15, 0x04}, schemaField, []byte{0x16, 0xc8, 0x01}, rowGroupsField, []byte{0x00}),
 			wantVersion: 2,
 			wantNumRows: 100,
 			wantSchema:  wantSchema,
@@ -206,13 +216,13 @@ func TestReadFileMetadata(t *testing.T) {
 		},
 		{
 			name:       "error: missing num_rows",
-			input:      []byte{0x15, 0x04, 0x00},
+			input:      cat([]byte{0x15, 0x04}, schemaField, []byte{0x00}),
 			wantErr:    true,
 			wantErrMsg: "num_rows",
 		},
 		{
 			name:        "version 2, num_rows 100, created_by nil, skip unknown",
-			input:       cat([]byte{0x15, 0x04}, schemaField, []byte{0x16, 0xc8, 0x01}, []byte{0x05, 0x28, 0x02}, []byte{0x00}),
+			input:       cat([]byte{0x15, 0x04}, schemaField, []byte{0x16, 0xc8, 0x01}, rowGroupsField, []byte{0x05, 0x28, 0x02}, []byte{0x00}),
 			wantVersion: 2,
 			wantNumRows: 100,
 			wantSchema:  wantSchema,
@@ -226,7 +236,7 @@ func TestReadFileMetadata(t *testing.T) {
 		},
 		{
 			name:          "version 2, num_rows 100, created_by 'x'",
-			input:         cat([]byte{0x15, 0x04}, schemaField, []byte{0x16, 0xc8, 0x01}, []byte{0x38, 0x01, 0x78}, []byte{0x00}),
+			input:         cat([]byte{0x15, 0x04}, schemaField, []byte{0x16, 0xc8, 0x01}, rowGroupsField, []byte{0x28, 0x01, 0x78}, []byte{0x00}),
 			wantVersion:   2,
 			wantNumRows:   100,
 			wantCreatedBy: strPtr("x"),
@@ -278,4 +288,66 @@ func FuzzReadFileMetadata(f *testing.F) {
 	f.Fuzz(func(t *testing.T, data []byte) {
 		_, _ = ReadFileMetadata(data)
 	})
+}
+
+func TestRowGroups(t *testing.T) {
+	f, err := ReadFile("testdata/many_rows.parquet")
+	if err != nil {
+		t.Fatalf("Readfile: %v", err)
+	}
+	groups := f.Metadata.RowGroups
+
+	if len(groups) != 3 {
+		t.Fatalf("row groups: want 3, got %d", len(groups))
+	}
+	wantBytes := []int64{4843, 4836, 4857}
+	for i, g := range groups {
+		if g.NumRows != 100 {
+			t.Errorf("group %d num_rows: want 100, got %d", i, g.NumRows)
+		}
+		if g.TotalByteSize != wantBytes[i] {
+			t.Errorf("group %d total_byte_size: want %d, got %d", i, wantBytes[i], g.TotalByteSize)
+		}
+		if len(g.Columns) != 8 {
+			t.Errorf("group %d columns: want 8, got %d", i, len(g.Columns))
+		}
+	}
+
+	// --- one chunk in full: row_number, group 0 ---
+	wantChunk := ColumnChunk{
+		FilePath:   nil,
+		FileOffset: 0,
+		Metadata: &ColumnMetadata{
+			Type:                  TypeInt64,
+			Encodings:             []Encoding{EncodingPlain},
+			PathInSchema:          []string{"row_number"},
+			Codec:                 CodecUncompressed,
+			NumValues:             100,
+			TotalUncompressedSize: 876,
+			TotalCompressedSize:   876,
+			DataPageOffset:        4,
+			DictionaryPageOffset:  nil,
+			Statistics: &Statistics{
+				NullCount:     ptr(int64(0)),
+				DistinctCount: nil,
+				MinValue:      []byte{1, 0, 0, 0, 0, 0, 0, 0},
+				MaxValue:      []byte{100, 0, 0, 0, 0, 0, 0, 0},
+			},
+		},
+	}
+
+	if diff := cmp.Diff(wantChunk, groups[0].Columns[0]); diff != "" {
+		t.Errorf("group 0 chunk 0 mismatch (-want +got):\n%s", diff)
+	}
+
+	// --- min/max across groups: non-overlapping ranges ---
+	wantRanges := [][2]int64{{1, 100}, {101, 200}, {201, 300}}
+	for i, g := range groups {
+		s := g.Columns[0].Metadata.Statistics
+		gotMin := int64(binary.LittleEndian.Uint64(s.MinValue))
+		gotMax := int64(binary.LittleEndian.Uint64(s.MaxValue))
+		if gotMin != wantRanges[i][0] || gotMax != wantRanges[i][1] {
+			t.Errorf("group %d range: want %v, got [%d %d]", i, wantRanges[i], gotMin, gotMax)
+		}
+	}
 }

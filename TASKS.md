@@ -606,10 +606,10 @@ field, and case 2 in `ReadFileMetadata` stops being a `Skip`.
       leaf → `varchar[]`. Your own output prints the PHYSICAL type, so the two
       are supposed to differ — the check is that the chain is consistent, not
       that the strings match.
-- [ ] Run it against a real file from the observability agent (all seven
+- [X] Run it against a real file from the observability agent (all seven
       sources). The `journal` schema is the interesting one: many optionals,
       one string carrying JSON.
-- [ ] For a flat schema with only required and optional leaves, assert
+- [X] For a flat schema with only required and optional leaves, assert
       `max_definition_level` is 0 for required and 1 for optional. Any other
       value means your ancestor walk is wrong.
 
@@ -673,8 +673,13 @@ code. Nothing here needs a new technique — only the recipe table and the form.
 `rowgroup.go`. Called from a `case 4` in `ReadFileMetadata`, which is a
 `ListHeader` plus a loop — identical to the `case 2` you already wrote.
 
-**Required:** 1, 2, 3 — presence bools. **Optional:** 4, 5, 6, 7 — pointers
-(except 4, which you skip entirely).
+**Modelled:** 1, 2, 3 (required → presence bools); 5, 6, 7 (optional →
+pointers). **Skipped by the default branch:** 4 (`sorting_columns`) — it is a
+`list<SortingColumn>`, another struct to model, and nothing in stage 3 needs it.
+
+Note "optional in the thrift" and "modelled by you" are separate axes. A field
+can be optional and simply not modelled, in which case it has no struct field
+and therefore no pointer — it just falls to `Skip`.
 
 **One expected value:**
 ```sh
@@ -683,6 +688,118 @@ duckdb -c "select num_rows, num_row_groups from parquet_file_metadata('testdata/
 `many_rows.parquet` has 3 row groups of 100 rows, so `len(RowGroups)` is 3 and
 each `NumRows` is 100.
 
+#### Worked model `ColumnChunk` (thrift line 992)
+
+** Fields:**
+```
+1: optional string          file_path
+2: required i64             file_offset (deprecated, expect 0 from writers)
+3: optional ColumnMetadata  meta_data
+```
+
+**Per field:** 1, 2, 3 -> `FieldHeader` + loop w/switch. `d.Text()` for 1, `Int64()` for 2, `readColumnMetadata` for 3. default -> `Skip`
+
+**Signature:** `readColumnChunk(d *thirft.Decoder) (ColumnChunk, error)` possibly in a new columns.go file
+
+**Required:** 2 - presence bool. **Optional:** 1, 3 - pointers
+
+**One expected value:**
+```sh
+duckdb -c "select row_group_id, path_in_schema, file_offset from parquet_metadata('testdata/basic.parquet')"
+```
+`basic.parquet` has 8 columns all in one row group. `file_offset` is always 0 because the field is deprecated and writers should set it to 0.
+
+#### Worked model `ColumnMetaData` (thrift line 909)
+
+**Fields:**
+```
+1.  required Type               type
+2.  required <list>Encoding     encodings
+3.  required <list>string       path_in_schema
+4.  required CompressionCodec   codec
+5.  required i64                num_values
+6.  required i64                total_uncompressed_size
+7.  required i64                total_compressed_size
+9.  required i64                data_page_offset
+11. optional i64                dictionary_page_offset
+12. optional Statistics         statistics
+```
+
+**Per field:**
+
+all -> `FieldHeader` + loop w/switch
+
+1. `d.Int64()` -> PhysicalType
+2. `ListHeader` -> `d.Int64()` -> new Encoding enum (thrift 586-660)
+3. `ListHeader` -> `d.Text()`
+4. `d.Int64()` -> new CompressionCodec enum (thrift 671-680)
+5. `d.Int64()`
+6. `d.Int64()`
+7. `d.Int64()`
+9. `d.Int64()`
+11. `d.Int64()`
+12. `readStatistics`
+
+**Signature:** `readColumnMetadata(d *Decoder) (ColumnMetadata, error)` either in the same columns.go file or a common file for all  
+
+**Required:** 1-9 (excl. 8) - presence bool. **Optional:** 11, 12 - pointers
+
+**One expected value:**
+
+```sh
+duckdb -c "select type, encodings, path_in_schema, compression, num_values, total_uncompressed_size, total_compressed_size, data_page_offset, dictionary_page_offset from parquet_metadata('testdata/basic.parquet')"
+
+```
+┌────────────┬──────────────────────────────┬─────────────────┬──────────────┬────────────┬─────────────────────────┬───────────────────────┬──────────────────┬────────────────────────┐
+│    type    │          encodings           │ path_in_schema  │ compression  │ num_values │ total_uncompressed_size │ total_compressed_size │ data_page_offset │ dictionary_page_offset │
+│  varchar   │           varchar            │     varchar     │   varchar    │   int64    │          int64          │         int64         │      int64       │         int64          │
+├────────────┼──────────────────────────────┼─────────────────┼──────────────┼────────────┼─────────────────────────┼───────────────────────┼──────────────────┼────────────────────────┤
+│ INT64      │ PLAIN                        │ row_number      │ UNCOMPRESSED │        100 │                     876 │                   876 │                4 │                   NULL │
+│ INT64      │ PLAIN, RLE                   │ even_row_number │ UNCOMPRESSED │        100 │                     497 │                   497 │              880 │                   NULL │
+│ BYTE_ARRAY │ DELTA_LENGTH_BYTE_ARRAY      │ rand_id         │ UNCOMPRESSED │        100 │                     830 │                   830 │             1377 │                   NULL │
+│ BYTE_ARRAY │ RLE, DELTA_LENGTH_BYTE_ARRAY │ opt_rand_id     │ UNCOMPRESSED │        100 │                     387 │                   387 │             2207 │                   NULL │
+│ BYTE_ARRAY │ DELTA_LENGTH_BYTE_ARRAY      │ category        │ UNCOMPRESSED │        100 │                     442 │                   442 │             2594 │                   NULL │
+│ DOUBLE     │ PLAIN                        │ rand_float      │ UNCOMPRESSED │        100 │                     876 │                   876 │             3036 │                   NULL │
+│ INT64      │ PLAIN                        │ ts              │ UNCOMPRESSED │        100 │                     876 │                   876 │             3912 │                   NULL │
+│ BOOLEAN    │ PLAIN                        │ is_odd          │ UNCOMPRESSED │        100 │                      59 │                    59 │             4788 │                   NULL │
+└────────────┴──────────────────────────────┴─────────────────┴──────────────┴────────────┴─────────────────────────┴───────────────────────┴──────────────────┴────────────────────────┘
+
+#### Worked model `Statistics` (thrift line 267)
+
+**Fields:**
+```
+3. optional i64     null_count
+4. optional i64     distinct_count
+5. optional binary  max_value
+6. optional binary  min_value
+```
+
+**Per field:** 3, 4 -> `d.Int64()`; 5,6 -> `d.Bytes()`
+
+**Signature:** `readStatistics(d *Decoder) (Statistics, error)` either in the same columns.go file or a common file for all
+
+**Optional:** 3-6 - pointers
+
+**One expected value:**
+
+```sh
+duckdb -c "select stats_null_count, stats_distinct_count, stats_max_value, stats_min_value from parquet_metadata('testdata/basic.parquet')"
+```
+
+┌──────────────────┬──────────────────────┬────────────────────────┬────────────────────────┐
+│ stats_null_count │ stats_distinct_count │    stats_max_value     │    stats_min_value     │
+│      int64       │        int64         │        varchar         │        varchar         │
+├──────────────────┼──────────────────────┼────────────────────────┼────────────────────────┤
+│                0 │                 NULL │ 100                    │ 1                      │
+│               50 │                 NULL │ 100                    │ 2                      │
+│                0 │                 NULL │ id-0100                │ id-0001                │
+│               67 │                 NULL │ opt-0099               │ opt-0003               │
+│                0 │                 NULL │ foo                    │ bar                    │
+│                0 │                 NULL │ 0.9973219642829593     │ 0.0014109740758089743  │
+│                0 │                 NULL │ 2026-01-01 00:01:40+00 │ 2026-01-01 00:00:01+00 │
+│                0 │                 NULL │ true                   │ false                  │
+└──────────────────┴──────────────────────┴────────────────────────┴────────────────────────┘
+
 ---
 
 #### Your turn: fill in the form for these three
@@ -690,15 +807,15 @@ each `NumRows` is 100.
 Bring the filled forms before writing code. If a form is right, write it
 unassisted; if not, we have caught it at the cheap stage.
 
-- [ ] **`ColumnChunk`** (thrift line 992). Nine fields. You need 1, 2, 3;
+- [X] **`ColumnChunk`** (thrift line 992). Nine fields. You need 1, 2, 3;
       skip 4–9 (offset/column index pointers and encryption). Note field 3 is a
       nested struct, not a list.
-- [ ] **`ColumnMetaData`** (thrift line 909). Seventeen fields — the biggest
+- [X] **`ColumnMetaData`** (thrift line 909). Seventeen fields — the biggest
       struct in the project, and the one that makes `sawdust stat` possible.
       You need 1–7, 9, 11, 12. Two fields are `list<enum>` and one is
       `list<string>`, so this is the first place `ListHeader` feeds something
       other than structs.
-- [ ] **`Statistics`** (thrift line 267). Nine fields; you need 3, 4, 5, 6.
+- [X] **`Statistics`** (thrift line 267). Nine fields; you need 3, 4, 5, 6.
       Fields 1 and 2 are the DEPRECATED min/max — check which your files
       actually write before deciding whether to decode them. Fields 5 and 6 are
       raw `binary` whose meaning depends on the column's physical type, so
