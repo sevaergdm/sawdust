@@ -96,6 +96,75 @@ Recorded as they are made, so later claims can be checked against earlier ones.
 | ts              | UNCOMPRESSED | PLAIN                        |
 | is_odd          | UNCOMPRESSED | PLAIN                        |
 
+### 2026-08-26: sawdust stat on one journal parquet file 
+
+```sh
+./bin/sawdust stat /var/lib/machine-observability/data/source=journal/date=2026-08-20/hour=04/01M0ERDV6F56FVR7K4VPGEEZQ7.parquet
+rows: 41  row groups: 1 (41) file: 13740 bytes
+
+group  column             type        codec  encodings                    values  comp  uncomp  ratio  nulls
+0      cursor             byte_array  ZSTD   DELTA_LENGTH_BYTE_ARRAY      41      1483  5686    3.83   0
+0      monotonic_ts       int64       ZSTD   PLAIN                        41      218   402     1.84   0
+0      ts                 int64       ZSTD   PLAIN                        41      216   402     1.86   0
+0      seqnum             int64       ZSTD   PLAIN                        41      162   402     2.48   0
+0      seqnum_id          byte_array  ZSTD   DELTA_LENGTH_BYTE_ARRAY      41      239   1540    6.44   0
+0      message            byte_array  ZSTD   RLE,DELTA_LENGTH_BYTE_ARRAY  41      1100  4399    4.00   0
+0      priority           int64       ZSTD   PLAIN,RLE                    41      132   405     3.07   0
+0      syslog_facility    int64       ZSTD   PLAIN,RLE                    41      117   405     3.46   0
+0      syslog_identifier  byte_array  ZSTD   RLE,DELTA_LENGTH_BYTE_ARRAY  41      176   712     4.05   0
+0      systemd_unit       byte_array  ZSTD   RLE,DELTA_LENGTH_BYTE_ARRAY  41      229   834     3.64   0
+0      pid                int64       ZSTD   PLAIN,RLE                    41      127   405     3.19   0
+0      uid                int64       ZSTD   PLAIN,RLE                    41      108   404     3.74   0
+0      comm               byte_array  ZSTD   RLE,DELTA_LENGTH_BYTE_ARRAY  41      173   628     3.63   0
+0      boot_id            byte_array  ZSTD   RLE,DELTA_LENGTH_BYTE_ARRAY  41      243   1544    6.35   0
+0      transport          byte_array  ZSTD   RLE,DELTA_LENGTH_BYTE_ARRAY  41      152   381     2.51   0
+0      fields             byte_array  ZSTD   DELTA_LENGTH_BYTE_ARRAY      41      4383  34021   7.76   0
+
+by compressed bytes:
+  Column             Compressed  Uncompressed  Compressed Ratio
+  fields             4383        34021         7.76
+  cursor             1483        5686          3.83
+  message            1100        4399          4.00
+  boot_id            243         1544          6.35
+  seqnum_id          239         1540          6.44
+  systemd_unit       229         834           3.64
+  monotonic_ts       218         402           1.84
+  ts                 216         402           1.86
+  syslog_identifier  176         712           4.05
+  comm               173         628           3.63
+  seqnum             162         402           2.48
+  transport          152         381           2.51
+  priority           132         405           3.07
+  pid                127         405           3.19
+  syslog_facility    117         405           3.46
+  uid                108         404           3.74
+```
+
+### 2026-08-26: sawdust survey on all journal parquet files
+
+```sh
+files: 70  skipped: 0  rows: 6937  row groups: 70  rows/group: min 1 mean 99 max 2821  total size: 1176611 bytes
+
+by compressed bytes:
+  Column             Compressed  Uncompressed  Compressed Ratio
+  fields             362427      3133852       8.65
+  cursor             186717      896207        4.80
+  message            144205      475306        3.30
+  ts                 19428       60592         3.12
+  monotonic_ts       19375       60586         3.13
+  boot_id            16695       236933        14.19
+  systemd_unit       16683       71039         4.26
+  seqnum_id          16457       236722        14.38
+  syslog_identifier  15494       72469         4.68
+  seqnum             14338       60577         4.22
+  comm               13809       44204         3.20
+  transport          10617       51524         4.85
+  pid                9546        33926         3.55
+  uid                7995        33923         4.24
+  priority           7977        60763         7.62
+  syslog_facility    6857        58171         8.48
+  ```
+
 ## Reading
 
 - [apache/parquet-format](https://github.com/apache/parquet-format) —

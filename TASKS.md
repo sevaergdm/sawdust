@@ -828,17 +828,22 @@ unassisted; if not, we have caught it at the cheap stage.
 
 ### Measure (record in the README table)
 
-- [ ] Run `sawdust stat` over a day of real observability data. Which columns
+- [X] Run `sawdust stat` over a day of real observability data. Which columns
       dominate the bytes? Is it the JSON `fields` column, as you would guess?
-- [ ] Compare compression ratio per column. Which columns compress 20:1 and
+      Answer: `fields` dominates as expected since it will tend to be the largest field, and most varied
+- [X] Compare compression ratio per column. Which columns compress 20:1 and
       which barely compress? Form a hypothesis about why *before* looking, then
       check it against the encodings list.
-- [ ] What encodings does parquet-go actually use for your columns? Find out
+      Answer: None compress 20:1, but boot_id and seqnum_id have the highest values. This is can be explained by the high number 
+        of repeating values. Similarly, fields does have decent compression because of repeating keys
+- [X] What encodings does parquet-go actually use for your columns? Find out
       here rather than assuming — this determines exactly which decoders Stage 4
       and 5 need to implement.
-- [ ] Row group sizes across your files: how many rows per row group does a
+      Answer: PLAIN, DELTA_LENGTH_BYTE_ARRAY, RLE
+- [X] Row group sizes across your files: how many rows per row group does a
       typical flush produce? Relate that to your flush thresholds (10k/60s for
       journal, age-driven for pollers).
+      Answer: journal has around 100 rows per row group, I checked cpu which has around 500. Imporant caveat is that the last days this machine hasn't been used that much. But 10000 is likely too large.
 - [ ] Are any columns' statistics *useful* for pruning — i.e. do min/max ranges
       on `ts` barely overlap between row groups, or do they all span the same
       window?
