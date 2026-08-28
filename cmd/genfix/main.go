@@ -6,6 +6,7 @@ import (
 	"math/rand"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/parquet-go/parquet-go"
@@ -47,6 +48,8 @@ func main() {
 	fileName := flag.String("file_name", "", "the name of the file")
 	rowGroupSize := flag.Int64("row_group_size", 0, "the size of the row groups, uses default if not specified")
 	kind := flag.String("kind", "row", "the kind of row to write")
+	compression := flag.String("compression", "", "the compression to apply, none if not supplied")
+	pageBufferSize := flag.Int("page_buffer_size", 0, "page buffer size in bytes")
 	flag.Parse()
 	if *outDir == "" {
 		fmt.Fprintf(os.Stderr, "error: no output directory specified\n")
@@ -69,9 +72,9 @@ func main() {
 	var err error
 	switch *kind {
 	case "row":
-		err = writeRows(path, buildRows(*numRows), *rowGroupSize)
+		err = writeRows(path, buildRows(*numRows), *rowGroupSize, *compression, *pageBufferSize)
 	case "nested":
-		err = writeRows(path, buildNestedRows(*numRows), *rowGroupSize)
+		err = writeRows(path, buildNestedRows(*numRows), *rowGroupSize, *compression, *pageBufferSize)
 	default:
 		err = fmt.Errorf("unknown kind: %s. Only rows and nested accepted", *kind)
 	}
@@ -83,7 +86,7 @@ func main() {
 
 }
 
-func writeRows[T any](path string, rows []T, rowGroupSize int64) error {
+func writeRows[T any](path string, rows []T, rowGroupSize int64, compression string, pageBufferSize int) error {
 	f, err := os.Create(path)
 	if err != nil {
 		return fmt.Errorf("could not create parquet file '%s': %v", path, err)
@@ -93,6 +96,27 @@ func writeRows[T any](path string, rows []T, rowGroupSize int64) error {
 	var options []parquet.WriterOption
 	if rowGroupSize > 0 {
 		options = append(options, parquet.MaxRowsPerRowGroup(rowGroupSize))
+	}
+
+	if compression != "" {
+		switch strings.ToLower(compression) {
+		case "zstd":
+			options = append(options, parquet.Compression(&parquet.Zstd))
+		case "gzip":
+			options = append(options, parquet.Compression(&parquet.Gzip))
+		case "snappy":
+			options = append(options, parquet.Compression(&parquet.Snappy))
+		case "lz4raw":
+			options = append(options, parquet.Compression(&parquet.Lz4Raw))
+		case "brotli":
+			options = append(options, parquet.Compression(&parquet.Brotli))
+		default:
+			return fmt.Errorf("unknown compression codec %s provided, possible values are: zstd, gzip, snappy, lz4raw, brotli", compression)
+		}
+	}
+
+	if pageBufferSize > 0 {
+		options = append(options, parquet.PageBufferSize(pageBufferSize))
 	}
 
 	writer := parquet.NewGenericWriter[T](f, options...)

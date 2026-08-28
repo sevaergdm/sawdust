@@ -844,25 +844,36 @@ unassisted; if not, we have caught it at the cheap stage.
       typical flush produce? Relate that to your flush thresholds (10k/60s for
       journal, age-driven for pollers).
       Answer: journal has around 100 rows per row group, I checked cpu which has around 500. Imporant caveat is that the last days this machine hasn't been used that much. But 10000 is likely too large.
-- [ ] Are any columns' statistics *useful* for pruning — i.e. do min/max ranges
+- [X] Are any columns' statistics *useful* for pruning — i.e. do min/max ranges
       on `ts` barely overlap between row groups, or do they all span the same
       window?
 
 ### Verify
 
-- [ ] `SELECT * FROM parquet_metadata('f.parquet');` — DuckDB gives one row per
+- [X] `SELECT * FROM parquet_metadata('f.parquet');` — DuckDB gives one row per
       column chunk with `row_group_id`, `path_in_schema`, `compression`,
       `encodings`, `stats_min`/`stats_max`, `stats_null_count`,
       `total_compressed_size`, `data_page_offset`, `dictionary_page_offset`.
       Every field you decode must match.
-- [ ] `null_count` for a column must equal
+- [X] `null_count` for a column must equal
       `SELECT count(*) - count(col) FROM 'f.parquet';`
-- [ ] `min_value`/`max_value` decoded through the schema must equal
+- [X] `min_value`/`max_value` decoded through the schema must equal
       `SELECT min(col), max(col) FROM 'f.parquet';` — including for the string
       and timestamp columns, which is where naive byte interpretation breaks.
-- [ ] Sum of `total_compressed_size` across chunks should be within a few
-      hundred bytes of the file size (the gap is page headers, magic and
-      footer). Explain the gap rather than shrugging at it.
+- [X] Sum of `total_compressed_size` across chunks, plus the footer length,
+      plus 12 bytes of magic and length field, should leave only page headers
+      unaccounted for — roughly 50 bytes per chunk. Check the arithmetic
+      closes rather than shrugging at the gap.
+      **Do NOT expect the footer to be small.** Measured 2026-08-26 on a real
+      41-row journal file: 13740 bytes total = 9258 chunk data + 3640 footer +
+      12 magic + 830 page headers. The footer was 26% of the file, because
+      `Statistics` embeds min/max as raw bytes and 16 columns × 2 values
+      includes whole JSON documents (`fields`) and long journald tokens
+      (`cursor`). An earlier version of this item said "within a few hundred
+      bytes", which is only true for a narrow schema with short values.
+      Worth carrying back to machine-observability: a small age-driven flush
+      pays a large fixed metadata cost, which is an argument for 5.4's
+      compaction independent of the file-count math.
 
 **Pain:** statistics look like they should be typed values and are raw bytes
 whose meaning depends on the column's physical type and logical annotation. A
@@ -891,35 +902,60 @@ column, no nulls, no dictionary.
 
 ### New fixtures for this stage
 
-- [ ] `zstd.parquet` — the same rows as `basic.parquet`, compressed with ZSTD.
+- [X] `zstd.parquet` — the same rows as `basic.parquet`, compressed with ZSTD.
       Two files with identical rows and different compression let you prove your
       decompression step is right: the decoded values must match exactly.
-- [ ] A file with enough rows that one column's values do not fit in a single
+- [X] A file with enough rows that one column's values do not fit in a single
       page. You will not know how many rows that takes until you look, so
       generate, inspect, and adjust.
 
 ### Build
 
-- [ ] Seek to a chunk's `data_page_offset` and decode a `PageHeader` — which is
-      Thrift compact again, uncompressed, immediately before each page's
-      payload. Fields: `type` (DATA_PAGE=0, DICTIONARY_PAGE=2, DATA_PAGE_V2=3),
-      `uncompressed_page_size`, `compressed_page_size`, and one of the
-      per-type sub-headers.
-- [ ] Note there is no page count and no page index in `ColumnMetaData`: you
-      walk pages by consuming `compressed_page_size` bytes and decoding the
-      next header, until you have seen `num_values` values.
-- [ ] Decompress a page payload with ZSTD (`klauspost/compress/zstd` is fine —
-      the learning target is the format, not the compressor). Assert the
-      decompressed length equals `uncompressed_page_size`; a mismatch means
-      your byte range was wrong.
-- [ ] Decode PLAIN-encoded INT64: fixed 8 bytes each, little-endian. Do this
-      for a required column so there are no levels in the way.
-- [ ] Handle both page versions: in V1 the levels and values are compressed
-      *together* in one payload; in V2 the level bytes are stored uncompressed
-      before the compressed values, with their lengths given in the header
-      (`definition_levels_byte_length`, `repetition_levels_byte_length`). Find
-      out which version your fixtures and real files use.
+Two facts to have in hand before starting — neither is a task:
+
+`ColumnMetaData` carries no page count and no page index. The only way to
+enumerate a chunk's pages is to walk its bytes.
+
+Parquet applies **two independent transforms** to a column, and they are easy to
+conflate. An *encoding* turns values into bytes (`PLAIN`, `RLE`,
+`DELTA_BINARY_PACKED`, `DELTA_LENGTH_BYTE_ARRAY`) and is Parquet's own spec. A
+*compression codec* then squeezes those bytes (`ZSTD`, `GZIP`, `SNAPPY`,
+`UNCOMPRESSED`) and is not Parquet-specific at all. Writing is
+encode-then-compress; reading is decompress-then-decode. Every item below is one
+stage of that pipeline, which is why they chain rather than substitute.
+
+- [X] Given a column chunk, produce its pages — each one's header plus the bytes
+      of its payload. The header is Thrift compact again, uncompressed, sitting
+      immediately before the payload it describes.
+- [X] Given one page, produce its uncompressed value bytes. Note that in a V2
+      page the level bytes are stored *uncompressed* at the front, so the
+      payload is not uniformly compressed and the result should be the values
+      only. `klauspost/compress/zstd` is fine — the learning target is the
+      format, not the compressor.
+- [ ] Given uncompressed PLAIN INT64 bytes, produce numbers. Fixed 8 bytes per
+      value, little-endian, back to back — no separators, no length prefix.
+      This is the first of a family (other physical types, then RLE and the
+      delta encodings in stage 5), so it wants its own file rather than a home
+      in `page.go`.
+      - [X] Reject a byte count that isn't a multiple of 8
+      - [X] **Done when:** the decompressed bytes of `row_number` come back as
+            1..100
+- [ ] Chain those three into one call that takes a column chunk and returns
+      every value in it, in order. This is what `cat` needs, and it is the first
+      place per-page results must be *accumulated* rather than returned
+      directly. Two decisions fall out of it: what the intermediate results'
+      lifetime should be, and where the zstd decoder gets created, given that
+      one page is the wrong lifetime for it.
+      - [ ] **Done when:** a chunk spanning several pages returns the same
+            values as the single-page equivalent
 - [ ] `sawdust cat <file> <column>` prints the values.
+      - [ ] **Done when:** its output matches
+            `duckdb -c "SELECT <col> FROM 'f.parquet'"`
+
+Deferred, not skipped: V1 data pages compress levels and values *together* in
+one payload, where V2 keeps the levels uncompressed at the front. Every fixture
+here and everything parquet-go writes is V2, so there is nothing to test V1
+against yet. Revisit when a file from elsewhere needs it.
 
 ### Traps to hit deliberately
 
@@ -975,38 +1011,87 @@ Goal: reconstruct whole rows. This is where the format's cleverness lives.
       no nulls at all.
 - [ ] These need a parameter on `buildRows` controlling whether the optional
       fields get filled, not a second `row` type. Same struct, different data.
+- [ ] A dictionary-encoded fixture. None of the current fixtures use
+      `RLE_DICTIONARY` — `stat` shows `PLAIN`, `RLE` and
+      `DELTA_LENGTH_BYTE_ARRAY` throughout — so the dictionary items below have
+      nothing to run against until this exists. Getting parquet-go to choose a
+      dictionary may take a writer option, a low-cardinality column, or both;
+      `stat`'s encodings column tells you whether you succeeded. Pair it with a
+      plain-encoded file holding the same values, the way `zstd.parquet` pairs
+      with `basic.parquet`.
 
 ### Build
 
-- [ ] The RLE/bit-packing hybrid decoder. Each run starts with a varint header:
-      the low bit selects the mode, the remaining bits are the length. Bit
-      clear → an RLE run of `header >> 1` repeats of a single bit-packed value;
-      bit set → `(header >> 1) * 8` bit-packed values. Values are packed
-      LSB-first at a fixed bit width.
-- [ ] Definition levels for an optional leaf: bit width is
-      `ceil(log2(maxDefLevel + 1))`, so 1 for a flat optional column. A level
-      equal to `maxDefLevel` means present; anything less means null at that
-      ancestor depth. **Only `num_values - nullCount` actual values are stored**
-      — this is the part that breaks a naive reader.
-- [ ] Confirm the mirror case: a REQUIRED column stores no definition levels at
-      all. Assert it on a fixture.
-- [ ] Handle the V1 level framing: when levels are RLE-encoded in a V1 data
-      page, a 4-byte little-endian length precedes the RLE stream. V2 has no
-      such prefix — the lengths are in the header.
-- [ ] Dictionary pages: decode the `DICTIONARY_PAGE` at
-      `dictionary_page_offset` (PLAIN-encoded values), then decode the data
-      page's indices, which are RLE/bit-packed with the **bit width stored as
-      the first byte** of the value region. Map indices back to dictionary
-      entries.
-- [ ] PLAIN BYTE_ARRAY: each value is a 4-byte little-endian length followed by
-      bytes. Apply the schema's UTF-8 annotation to decide `string` vs `[]byte`.
-- [ ] INT64 microsecond timestamps → `time.Time` in UTC, using the logical type
-      to distinguish millis/micros/nanos and adjusted-to-UTC or not.
-- [ ] Doubles (IEEE 754 LE) and booleans (bit-packed, LSB-first).
-- [ ] A row iterator: assemble one struct/map per row across all leaf columns of
-      a row group.
+Facts to have in hand, none of them tasks:
+
+**Values and rows are different counts.** A page's header gives both
+`num_values` and `num_nulls`; only `num_values - num_nulls` values are actually
+stored. Nothing in the value bytes marks where the gaps go — a separate stream
+does.
+
+**The RLE/bit-packing hybrid framing.** Each run begins with a varint header.
+Its low bit selects the mode; the remaining bits are the length. Bit clear means
+an RLE run of `header >> 1` repeats of one bit-packed value. Bit set means
+`(header >> 1) * 8` bit-packed values. Values are packed LSB-first at a fixed
+bit width.
+
+**Bit width for definition levels** is `ceil(log2(maxDefLevel + 1))` — 1 bit for
+a flat optional column. Note what the formula gives for a required column:
+`maxDefLevel` is 0, so the width is 0 and no levels are stored at all. The
+required case isn't a special case; it falls out of the same rule.
+
+**The dictionary index bit width is data, not metadata.** It's the first byte of
+the data page's value region, not something derivable from the schema.
+
+Ordered so each item has what it needs from the one before:
+
+- [ ] Given RLE/bit-packed bytes and a bit width, produce integers. This is the
+      foundation for two separate things — definition levels and dictionary
+      indices — so it takes a bit width as input and knows nothing about either.
+      - [ ] **Done when:** it round-trips the definition-level stream of
+            `even_row_number` into 100 levels of which 50 are 1
+- [ ] Given a page's definition levels and its stored values, produce
+      `num_values` slots with the nulls in the right places. This is the step
+      that reunites the two counts above, and getting it wrong shifts every
+      value after the first null.
+      - [ ] **Done when:** `even_row_number` comes back as alternating
+            value/null across all 100 rows
+- [ ] Decide how a column read returns different Go types. Stage 4 deferred this
+      while `int64` was the only case; this stage has four more (byte array,
+      double, boolean, and dictionary-indirected versions of each). The
+      chunk-reading call from stage 4 has one return type and now needs several.
+      Weigh a per-type method, a sealed interface like `LogicalType`, generics,
+      and `any` — this is a design decision, not a lookup, and it shapes every
+      item below it.
+- [ ] Given PLAIN BYTE_ARRAY bytes, produce values. Each is a 4-byte
+      little-endian length followed by that many bytes. The schema's UTF-8
+      annotation decides `string` versus `[]byte`.
+- [ ] Given PLAIN DOUBLE and BOOLEAN bytes, produce values. Doubles are IEEE 754
+      little-endian; booleans are bit-packed LSB-first, so the byte count is not
+      the value count.
+- [ ] Given a column chunk whose pages are dictionary-encoded, produce values.
+      Two composition problems here, not one: the chunk's first page is a
+      `DICTIONARY_PAGE` that must be decoded before any data page can be
+      interpreted, and the chunk start moves from `data_page_offset` to
+      `dictionary_page_offset`. The data pages then hold indices, which go
+      through the RLE decoder and get mapped back to dictionary entries.
+      - [ ] **Done when:** a dictionary-encoded column and a plain-encoded
+            column holding the same data decode to identical values
+- [ ] Given INT64 values and the leaf's logical type, produce `time.Time` in
+      UTC. The logical type distinguishes millis, micros and nanos, and says
+      whether the value is already UTC-adjusted.
+- [ ] Assemble whole rows: given every leaf column of one row group, produce one
+      record per row. This is a zip across columns rather than a decode, and it
+      is the first code that needs all columns at once instead of one at a time.
 - [ ] `sawdust cat <file>` with no column argument emits all rows as
       newline-delimited JSON.
+      - [ ] **Done when:** output diffs clean against a DuckDB CSV export of the
+            same file
+
+Deferred, not skipped: V1 data pages frame their levels differently — a 4-byte
+little-endian length precedes each RLE stream, where V2 puts the lengths in the
+header. Everything parquet-go writes is V2, so there is nothing here to test V1
+against. Same deferral as stage 4.
 
 ### Traps to hit deliberately
 
@@ -1026,6 +1111,10 @@ Goal: reconstruct whole rows. This is where the format's cleverness lives.
       Done-when; anything less hides a shift bug.
 - [ ] `optionals_all_null.parquet` and `optionals_never_null.parquet` must both
       round-trip, and `count(col)` from your output must equal DuckDB's.
+- [ ] Assert the mirror case on a fixture: a REQUIRED column stores no
+      definition levels at all. `row_number` in any fixture already shows
+      `definition_levels_byte_length: 0` — make it an assertion rather than an
+      observation.
 - [ ] For the low-cardinality column, assert your decoded distinct set equals
       `SELECT DISTINCT col FROM 'f.parquet';` and that the dictionary-encoded
       and plain-encoded fixtures produce identical values.

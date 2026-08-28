@@ -23,6 +23,8 @@ func TestEnums(t *testing.T) {
 		{"encoding unknown", Encoding(99), "Encoding(99)"},
 		{"codec known", CodecGZIP, "GZIP"},
 		{"codec unknown", CompressionCodec(99), "CompressionCodec(99)"},
+		{"page type known", DataPage, "DATA_PAGE"},
+		{"page type unknown", PageType(99), "PageType(99)"},
 	}
 
 	for _, tt := range tests {

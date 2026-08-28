@@ -37,10 +37,11 @@ func cmdSurvey(args []string) {
 			return nil
 		}
 
-		file, err := sawdust.ReadFile(p)
+		file, err := sawdust.OpenFile(p)
 		if err != nil {
 			return err
 		}
+		defer func() { _ = file.Close() }()
 
 		t.add(file)
 		return nil
@@ -50,8 +51,13 @@ func cmdSurvey(args []string) {
 		os.Exit(1)
 	}
 
+	if t.files == 0 {
+		fmt.Fprintf(os.Stderr, "no .parquet files found under %s\n", path)
+		os.Exit(1)
+	}
+
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	if _, err := fmt.Fprintf(w, "files: %d\tskipped: %d\trows: %d\trow groups: %d\trows/group: min %d mean %d max %d\ttotal size: %d bytes\n", t.files, t.skipped, t.numRows, t.numRowGroups, t.minRowsPerGroup, t.numRows/int64(t.numRowGroups), t.maxRowsPerGroup, t.fileBytes); err != nil {
+	if _, err := fmt.Fprintf(w, "files: %d\tskipped: %d\trows: %d\trow groups: %d\t%s\ttotal size: %d bytes\n", t.files, t.skipped, t.numRows, len(t.rowsPerGroup), t.rowsPerGroupSummary(), t.fileBytes); err != nil {
 		fmt.Fprintf(os.Stderr, "encountered an error printing file summary: %v", err)
 		os.Exit(1)
 	}

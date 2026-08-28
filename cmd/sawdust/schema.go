@@ -19,11 +19,12 @@ func cmdSchema(args []string) {
 	}
 
 	path := fs.Arg(0)
-	file, err := sawdust.ReadFile(path)
+	file, err := sawdust.OpenFile(path)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: could not read %q: %v\n", path, err)
 		os.Exit(1)
 	}
+	defer func() { _ = file.Close() }()
 
 	root, err := sawdust.BuildTree(file.Metadata.Schema)
 	if err != nil {

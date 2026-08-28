@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+
+	"github.com/sevaergdm/sawdust/internal/thrift"
 )
 
 type Footer struct {
@@ -13,9 +15,66 @@ type Footer struct {
 }
 
 type File struct {
+	reader   io.ReaderAt
+	closer   io.Closer
 	Size     int64
 	Footer   Footer
 	Metadata FileMetadata
+}
+
+func (f *File) Close() error {
+	if f.closer == nil {
+		return nil
+	}
+	return f.closer.Close()
+}
+
+func (f *File) ReadPages(chunk ColumnChunk) ([]Page, error) {
+	if chunk.Metadata == nil {
+		return nil, fmt.Errorf("no page data to read")
+	}
+
+	if chunk.Metadata.TotalCompressedSize < 0 || chunk.Metadata.TotalCompressedSize > f.Size {
+		return nil, fmt.Errorf("malformed payload size (%d)", chunk.Metadata.TotalCompressedSize)
+	}
+
+	var pages []Page
+	buf := make([]byte, chunk.Metadata.TotalCompressedSize)
+	if _, err := f.reader.ReadAt(buf, chunk.Metadata.DataPageOffset); err != nil {
+		return nil, fmt.Errorf("encountered error reading file at %d: %w", chunk.Metadata.DataPageOffset, err)
+	}
+
+	cursor := 0
+	for cursor < int(chunk.Metadata.TotalCompressedSize) {
+		d := thrift.NewDecoder(buf[cursor:])
+
+		pageHeader, err := readPageHeader(d)
+		if err != nil {
+			return nil, err
+		}
+
+		headerLen := d.Pos()
+		payloadStart := cursor + headerLen
+		payloadEnd := payloadStart + int(pageHeader.CompressedPageSize)
+
+		if payloadEnd < payloadStart || payloadEnd > len(buf) {
+			return nil, fmt.Errorf("malformed payload end position (%d)", payloadEnd)
+		}
+
+		pages = append(pages, Page{Header: pageHeader, Data: buf[payloadStart:payloadEnd]})
+		cursor = payloadEnd
+	}
+
+	totalValues := int64(0)
+	for _, page := range pages {
+		totalValues += page.Header.ValueCount()
+	}
+
+	if totalValues != chunk.Metadata.NumValues {
+		return nil, fmt.Errorf("sum of page values (%d) does not match the total values in the column (%d)", totalValues, chunk.Metadata.NumValues)
+	}
+
+	return pages, nil
 }
 
 func ReadFooter(f io.ReaderAt, size int64) (Footer, error) {
@@ -47,33 +106,36 @@ func ReadFooter(f io.ReaderAt, size int64) (Footer, error) {
 	return Footer{Length: footerLength, Start: metadataStart}, nil
 }
 
-func ReadFile(path string) (File, error) {
+func OpenFile(path string) (*File, error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return File{}, fmt.Errorf("encountered an error opening file %q: %w", path, err)
+		return nil, fmt.Errorf("encountered an error opening file %q: %w", path, err)
 	}
-	defer func() { _ = f.Close() }()
 
 	fStat, err := f.Stat()
 	if err != nil {
-		return File{}, fmt.Errorf("could not stat %q: %w", path, err)
+		_ = f.Close()
+		return nil, fmt.Errorf("could not stat %q: %w", path, err)
 	}
 
 	size := fStat.Size()
 
 	footer, err := ReadFooter(f, size)
 	if err != nil {
-		return File{}, fmt.Errorf("encountered an error reading footer in %q: %v", path, err)
+		_ = f.Close()
+		return nil, fmt.Errorf("encountered an error reading footer in %q: %v", path, err)
 	}
 
 	footerBytes := make([]byte, footer.Length)
 	if _, err := f.ReadAt(footerBytes, footer.Start); err != nil {
-		return File{}, fmt.Errorf("encountered an error reading from offset in %q: %v", path, err)
+		_ = f.Close()
+		return nil, fmt.Errorf("encountered an error reading from offset in %q: %v", path, err)
 	}
 
 	fileMetadata, err := ReadFileMetadata(footerBytes)
 	if err != nil {
-		return File{}, fmt.Errorf("encountered an error fetching file metadata in %q: %v", path, err)
+		_ = f.Close()
+		return nil, fmt.Errorf("encountered an error fetching file metadata in %q: %v", path, err)
 	}
-	return File{Size: size, Footer: footer, Metadata: fileMetadata}, nil
+	return &File{reader: f, closer: f, Size: size, Footer: footer, Metadata: fileMetadata}, nil
 }

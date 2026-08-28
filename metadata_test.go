@@ -291,10 +291,11 @@ func FuzzReadFileMetadata(f *testing.F) {
 }
 
 func TestRowGroups(t *testing.T) {
-	f, err := ReadFile("testdata/many_rows.parquet")
+	f, err := OpenFile("testdata/many_rows.parquet")
 	if err != nil {
-		t.Fatalf("Readfile: %v", err)
+		t.Fatalf("Openile: %v", err)
 	}
+	defer func() { _ = f.Close() }()
 	groups := f.Metadata.RowGroups
 
 	if len(groups) != 3 {

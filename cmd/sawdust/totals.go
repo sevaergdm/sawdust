@@ -2,7 +2,7 @@ package main
 
 import (
 	"fmt"
-	"math"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -17,34 +17,25 @@ type columnTotalBytes struct {
 }
 
 type totals struct {
-	files           int
-	skipped         int
-	numRows         int64
-	numRowGroups    int
-	minRowsPerGroup int64
-	maxRowsPerGroup int64
-	fileBytes       int64
-	byColumn        map[string]columnTotalBytes
+	files        int
+	skipped      int
+	numRows      int64
+	rowsPerGroup []int64
+	fileBytes    int64
+	byColumn     map[string]columnTotalBytes
 }
 
 func newTotals() totals {
-	return totals{minRowsPerGroup: math.MaxInt64, byColumn: make(map[string]columnTotalBytes)}
+	return totals{byColumn: make(map[string]columnTotalBytes)}
 }
 
-func (t *totals) add(f sawdust.File) {
+func (t *totals) add(f *sawdust.File) {
 	t.files++
 	t.numRows += f.Metadata.NumRows
-	t.numRowGroups += len(f.Metadata.RowGroups)
 	t.fileBytes += f.Size
 
 	for _, g := range f.Metadata.RowGroups {
-		if g.NumRows < t.minRowsPerGroup {
-			t.minRowsPerGroup = g.NumRows
-		}
-
-		if g.NumRows > t.maxRowsPerGroup {
-			t.maxRowsPerGroup = g.NumRows
-		}
+		t.rowsPerGroup = append(t.rowsPerGroup, g.NumRows)
 
 		for _, c := range g.Columns {
 			colName := strings.Join(c.Metadata.PathInSchema, ".")
@@ -80,4 +71,34 @@ func compressedRatio(cBytes, uBytes int64) string {
 		return "-"
 	}
 	return fmt.Sprintf("%.2f", float64(uBytes)/float64(cBytes))
+}
+
+func (t *totals) rowsPerGroupSummary() string {
+	if len(t.rowsPerGroup) == 0 {
+		return ""
+	}
+	return fmt.Sprintf("rows/group: min %d mean %d max %d", slices.Min(t.rowsPerGroup), t.numRows/int64(len(t.rowsPerGroup)), slices.Max(t.rowsPerGroup))
+}
+
+// rowsPerGroupStat assumes only one file and is only useful for the stat command
+func (t *totals) rowsPerGroupStat() string {
+	var rowGroupString strings.Builder
+	switch len(t.rowsPerGroup) {
+	case 0:
+		return ""
+	case 1:
+		return fmt.Sprintf("(%d)", t.rowsPerGroup[0])
+	default:
+		for i, group := range t.rowsPerGroup {
+			numRows := fmt.Sprintf("%d", group)
+			if i == 0 {
+				rowGroupString.WriteString("(" + numRows + ", ")
+			} else if i == len(t.rowsPerGroup)-1 {
+				rowGroupString.WriteString(numRows + ")")
+			} else {
+				rowGroupString.WriteString(numRows + ", ")
+			}
+		}
+	}
+	return rowGroupString.String()
 }

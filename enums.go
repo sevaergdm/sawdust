@@ -8,6 +8,7 @@ type ConvertedType int
 type TimeUnit int
 type Encoding int
 type CompressionCodec int
+type PageType int
 
 const (
 	TypeBoolean           PhysicalType = 0
@@ -69,6 +70,11 @@ const (
 	CodecLZ4          CompressionCodec = 5
 	CodecZSTD         CompressionCodec = 6
 	CodecLZ4Raw       CompressionCodec = 7
+
+	DataPage       PageType = 0
+	IndexPage      PageType = 1
+	DictionaryPage PageType = 2
+	DataPageV2     PageType = 3
 )
 
 var physicalTypeName = map[PhysicalType]string{
@@ -183,4 +189,18 @@ func (c CompressionCodec) String() string {
 		return s
 	}
 	return fmt.Sprintf("CompressionCodec(%d)", c)
+}
+
+var PageTypeName = map[PageType]string{
+	DataPage:       "DATA_PAGE",
+	IndexPage:      "INDEX_PAGE",
+	DictionaryPage: "DICTIONARY_PAGE",
+	DataPageV2:     "DATA_PAGE_V2",
+}
+
+func (p PageType) String() string {
+	if s, ok := PageTypeName[p]; ok {
+		return s
+	}
+	return fmt.Sprintf("PageType(%d)", p)
 }

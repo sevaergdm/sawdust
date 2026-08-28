@@ -19,18 +19,18 @@ func cmdStat(args []string) {
 		os.Exit(2)
 	}
 
-	t := newTotals()
 	path := fs.Arg(0)
-	file, err := sawdust.ReadFile(path)
+	file, err := sawdust.OpenFile(path)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "could not read %q: %v\n", path, err)
 		os.Exit(1)
 	}
+	defer func() { _ = file.Close() }()
 
+	t := newTotals()
 	t.add(file)
-	rowsPerGroup := buildRowsPerGroup(file.Metadata.RowGroups)
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	if _, err := fmt.Fprintf(w, "rows: %d  row groups: %d %s file: %d bytes\n", t.numRows, t.numRowGroups, rowsPerGroup, t.fileBytes); err != nil {
+	if _, err := fmt.Fprintf(w, "rows: %d  row groups: %d %s file: %d bytes\n", t.numRows, len(t.rowsPerGroup), t.rowsPerGroupStat(), t.fileBytes); err != nil {
 		fmt.Fprintf(os.Stderr, "encountered an error printing file summary: %v", err)
 		os.Exit(1)
 	}
@@ -94,28 +94,6 @@ func cmdStat(args []string) {
 		os.Exit(1)
 	}
 
-}
-
-func buildRowsPerGroup(rowGroups []sawdust.RowGroup) string {
-	var rowGroupString strings.Builder
-	switch len(rowGroups) {
-	case 0:
-		return ""
-	case 1:
-		return fmt.Sprintf("(%d)", rowGroups[0].NumRows)
-	default:
-		for i, group := range rowGroups {
-			numRows := fmt.Sprintf("%d", group.NumRows)
-			if i == 0 {
-				rowGroupString.WriteString("(" + numRows + ", ")
-			} else if i == len(rowGroups)-1 {
-				rowGroupString.WriteString(numRows + ")")
-			} else {
-				rowGroupString.WriteString(numRows + ", ")
-			}
-		}
-	}
-	return rowGroupString.String()
 }
 
 func encodingNames(list []sawdust.Encoding) string {

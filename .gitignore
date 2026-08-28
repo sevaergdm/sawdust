@@ -3,6 +3,9 @@ scratch/
 oracle.csv
 *.parquet.tmp
 
+# Agent handoff notes — local working state, not part of the project
+HANDOFF.md
+
 # Real Parquet must never reach this public repo (see README: fixtures are
 # generated, never copied). Only generated fixtures under testdata/ are allowed.
 *.parquet
