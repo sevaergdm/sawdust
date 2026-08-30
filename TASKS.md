@@ -940,16 +940,16 @@ stage of that pipeline, which is why they chain rather than substitute.
       - [X] Reject a byte count that isn't a multiple of 8
       - [X] **Done when:** the decompressed bytes of `row_number` come back as
             1..100
-- [ ] Chain those three into one call that takes a column chunk and returns
+- [X] Chain those three into one call that takes a column chunk and returns
       every value in it, in order. This is what `cat` needs, and it is the first
       place per-page results must be *accumulated* rather than returned
       directly. Two decisions fall out of it: what the intermediate results'
       lifetime should be, and where the zstd decoder gets created, given that
       one page is the wrong lifetime for it.
-      - [ ] **Done when:** a chunk spanning several pages returns the same
+      - [X] **Done when:** a chunk spanning several pages returns the same
             values as the single-page equivalent
-- [ ] `sawdust cat <file> <column>` prints the values.
-      - [ ] **Done when:** its output matches
+- [X] `sawdust cat <file> <column>` prints the values.
+      - [X] **Done when:** its output matches
             `duckdb -c "SELECT <col> FROM 'f.parquet'"`
 
 Deferred, not skipped: V1 data pages compress levels and values *together* in
@@ -959,7 +959,7 @@ against yet. Revisit when a file from elsewhere needs it.
 
 ### Traps to hit deliberately
 
-- [ ] Decompress `compressed_page_size` bytes starting at the page *header*
+- [X] Decompress `compressed_page_size` bytes starting at the page *header*
       offset rather than after it. Read the error ZSTD gives you and learn what
       "wrong offset" looks like.
 - [ ] Assume one page per chunk. Generate a fixture with enough rows to force
@@ -969,15 +969,15 @@ against yet. Revisit when a file from elsewhere needs it.
 
 ### Verify
 
-- [ ] `SELECT sum(c), count(c), min(c), max(c) FROM 'f.parquet';` must equal the
+- [X] `SELECT sum(c), count(c), min(c), max(c) FROM 'f.parquet';` must equal the
       same aggregates over your decoded slice. A checksum over the whole column
       catches ordering bugs that `sum` alone would hide — so also compare the
       first and last 10 values in order.
-- [ ] Decode the same column from `basic.parquet` and `zstd.parquet` and assert
+- [X] Decode the same column from `basic.parquet` and `zstd.parquet` and assert
       the two value slices are identical.
-- [ ] Decode from `many_rows.parquet` and confirm you get all rows, in row group
+- [X] Decode from `many_rows.parquet` and confirm you get all rows, in row group
       order.
-- [ ] `single_row.parquet` and `empty.parquet` must both work — the empty file
+- [X] `single_row.parquet` and `empty.parquet` must both work — the empty file
       is the guard-placement test: a zero-row file has a schema and no pages.
 
 **Pain:** a page's bytes are three concatenated regions with no separators, the
@@ -1005,13 +1005,13 @@ Goal: reconstruct whole rows. This is where the format's cleverness lives.
 
 ### New fixtures for this stage
 
-- [ ] `optionals_all_null.parquet` — every row leaves the optional fields unset,
+- [X] `optionals_all_null.parquet` — every row leaves the optional fields unset,
       so those columns are null all the way down.
-- [ ] `optionals_never_null.parquet` — every row sets them, so those columns have
+- [X] `optionals_never_null.parquet` — every row sets them, so those columns have
       no nulls at all.
-- [ ] These need a parameter on `buildRows` controlling whether the optional
+- [X] These need a parameter on `buildRows` controlling whether the optional
       fields get filled, not a second `row` type. Same struct, different data.
-- [ ] A dictionary-encoded fixture. None of the current fixtures use
+- [X] A dictionary-encoded fixture. None of the current fixtures use
       `RLE_DICTIONARY` — `stat` shows `PLAIN`, `RLE` and
       `DELTA_LENGTH_BYTE_ARRAY` throughout — so the dictionary items below have
       nothing to run against until this exists. Getting parquet-go to choose a

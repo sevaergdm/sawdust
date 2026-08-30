@@ -192,3 +192,87 @@ func TestReadPagesErr(t *testing.T) {
 		})
 	}
 }
+
+func TestReadInt64Column(t *testing.T) {
+	tests := []struct {
+		name       string
+		path       string
+		column     string
+		want       []int64
+		wantErr    bool
+		wantErrMsg string
+	}{
+		{name: "basic", path: "testdata/basic.parquet", column: "row_number", want: genInt64(100), wantErr: false},
+		{name: "zstd", path: "testdata/zstd.parquet", column: "row_number", want: genInt64(100), wantErr: false},
+		{name: "many_rows", path: "testdata/many_rows.parquet", column: "row_number", want: genInt64(300), wantErr: false},
+		{name: "single_row", path: "testdata/single_row.parquet", column: "row_number", want: genInt64(1), wantErr: false},
+		{name: "empty", path: "testdata/empty.parquet", column: "row_number", want: genInt64(0), wantErr: false},
+		{name: "wrong type", path: "testdata/basic.parquet", column: "category", wantErr: true, wantErrMsg: "not an int64"},
+		{name: "missing column", path: "testdata/basic.parquet", column: "fake", wantErr: true, wantErrMsg: "not found in schema"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f, err := OpenFile(tt.path)
+			if err != nil {
+				t.Fatalf("OpenFile: %v", err)
+			}
+			defer func() { _ = f.Close() }()
+
+			got, err := f.ReadInt64Column(tt.column)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("wantErr %v, got err %v", tt.wantErr, err)
+			}
+
+			if tt.wantErr {
+				if !strings.Contains(err.Error(), tt.wantErrMsg) {
+					t.Errorf("expected error message to contain '%s', but got %v", tt.wantErrMsg, err)
+				}
+				return
+			}
+
+			if diff := cmp.Diff(tt.want, got); diff != "" {
+				t.Errorf("mismatch (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
+
+func TestReadInt64ColumnBasicZstd(t *testing.T) {
+	basic, err := OpenFile("testdata/basic.parquet")
+	if err != nil {
+		t.Fatalf("OpenFile: %v", err)
+	}
+	defer func() { _ = basic.Close() }()
+
+	zstd, err := OpenFile("testdata/zstd.parquet")
+	if err != nil {
+		t.Fatalf("OpenFile: %v", err)
+	}
+	defer func() { _ = zstd.Close() }()
+
+	gotBasic, err := basic.ReadInt64Column("row_number")
+	if err != nil {
+		t.Fatalf("wanted no error, but got: %v", err)
+	}
+
+	gotZstd, err := zstd.ReadInt64Column("row_number")
+	if err != nil {
+		t.Fatalf("wanted no error, but got: %v", err)
+	}
+
+	if diff := cmp.Diff(gotBasic, gotZstd); diff != "" {
+		t.Errorf("mismatch (-want +got):\n%s", diff)
+	}
+}
+
+func genInt64(limit int) []int64 {
+	if limit == 0 {
+		return nil
+	}
+	output := make([]int64, 0, limit)
+	for i := 1; i <= limit; i++ {
+		output = append(output, int64(i))
+	}
+	return output
+}

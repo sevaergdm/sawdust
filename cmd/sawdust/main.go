@@ -20,6 +20,8 @@ func main() {
 		cmdStat(os.Args[2:])
 	case "survey":
 		cmdSurvey(os.Args[2:])
+	case "cat":
+		cmdCat(os.Args[2:])
 	default:
 		fmt.Fprintf(os.Stderr, "error: unknown command %q\n", os.Args[1])
 		usage()
@@ -32,9 +34,10 @@ func usage() {
 	fmt.Fprint(os.Stderr, `usage: sawdust <command> [arguments]
 
 Commands:
-  footer <file>   print the file's byte layout
-  schema <file>   print the schema tree
-	stat 	 <file> 	print file stats
-	survey <dir>		print stats for all parquet files in directory tree
+	footer	<file>					print the file's byte layout
+	schema	<file>					print the schema tree
+	stat		<file>					print file stats
+	survey	<dir>						print stats for all parquet files in directory tree
+	cat			<file> <column>	print values from given column
 `)
 }

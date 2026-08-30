@@ -50,6 +50,8 @@ func main() {
 	kind := flag.String("kind", "row", "the kind of row to write")
 	compression := flag.String("compression", "", "the compression to apply, none if not supplied")
 	pageBufferSize := flag.Int("page_buffer_size", 0, "page buffer size in bytes")
+	nulls := flag.String("null", "", "whether optional fields should be all nulls ('all_nulls') or no nulls ('no_nulls')")
+	encoding := flag.String("encoding", "", "type of encoding to use for columns. Either 'plain' or 'dict'")
 	flag.Parse()
 	if *outDir == "" {
 		fmt.Fprintf(os.Stderr, "error: no output directory specified\n")
@@ -63,8 +65,15 @@ func main() {
 		os.Exit(2)
 	}
 
+	switch *nulls {
+	case "", "all_nulls", "no_nulls":
+	default:
+		fmt.Fprintf(os.Stderr, "error: unknown -null value %q, must be all_nulls, no_nulls, or omitted\n", *nulls)
+		os.Exit(2)
+	}
+
 	if err := os.MkdirAll(*outDir, 0755); err != nil {
-		fmt.Fprintf(os.Stderr, "error: encountered an error creating directory %s: %v", *outDir, err)
+		fmt.Fprintf(os.Stderr, "error: encountered an error creating directory %s: %v\n", *outDir, err)
 		os.Exit(1)
 	}
 
@@ -72,21 +81,21 @@ func main() {
 	var err error
 	switch *kind {
 	case "row":
-		err = writeRows(path, buildRows(*numRows), *rowGroupSize, *compression, *pageBufferSize)
+		err = writeRows(path, buildRows(*numRows, *nulls), *rowGroupSize, *compression, *pageBufferSize, *encoding)
 	case "nested":
-		err = writeRows(path, buildNestedRows(*numRows), *rowGroupSize, *compression, *pageBufferSize)
+		err = writeRows(path, buildNestedRows(*numRows), *rowGroupSize, *compression, *pageBufferSize, *encoding)
 	default:
 		err = fmt.Errorf("unknown kind: %s. Only rows and nested accepted", *kind)
 	}
 
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v", err)
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
 
 }
 
-func writeRows[T any](path string, rows []T, rowGroupSize int64, compression string, pageBufferSize int) error {
+func writeRows[T any](path string, rows []T, rowGroupSize int64, compression string, pageBufferSize int, encoding string) error {
 	f, err := os.Create(path)
 	if err != nil {
 		return fmt.Errorf("could not create parquet file '%s': %v", path, err)
@@ -98,25 +107,34 @@ func writeRows[T any](path string, rows []T, rowGroupSize int64, compression str
 		options = append(options, parquet.MaxRowsPerRowGroup(rowGroupSize))
 	}
 
-	if compression != "" {
-		switch strings.ToLower(compression) {
-		case "zstd":
-			options = append(options, parquet.Compression(&parquet.Zstd))
-		case "gzip":
-			options = append(options, parquet.Compression(&parquet.Gzip))
-		case "snappy":
-			options = append(options, parquet.Compression(&parquet.Snappy))
-		case "lz4raw":
-			options = append(options, parquet.Compression(&parquet.Lz4Raw))
-		case "brotli":
-			options = append(options, parquet.Compression(&parquet.Brotli))
-		default:
-			return fmt.Errorf("unknown compression codec %s provided, possible values are: zstd, gzip, snappy, lz4raw, brotli", compression)
-		}
+	switch strings.ToLower(compression) {
+	case "":
+	case "zstd":
+		options = append(options, parquet.Compression(&parquet.Zstd))
+	case "gzip":
+		options = append(options, parquet.Compression(&parquet.Gzip))
+	case "snappy":
+		options = append(options, parquet.Compression(&parquet.Snappy))
+	case "lz4raw":
+		options = append(options, parquet.Compression(&parquet.Lz4Raw))
+	case "brotli":
+		options = append(options, parquet.Compression(&parquet.Brotli))
+	default:
+		return fmt.Errorf("unknown compression codec %s provided, possible values are: zstd, gzip, snappy, lz4raw, brotli", compression)
 	}
 
 	if pageBufferSize > 0 {
 		options = append(options, parquet.PageBufferSize(pageBufferSize))
+	}
+
+	switch strings.ToLower(encoding) {
+	case "":
+	case "plain":
+		options = append(options, parquet.DefaultEncoding(&parquet.Plain))
+	case "dict":
+		options = append(options, parquet.DefaultEncoding(&parquet.RLEDictionary))
+	default:
+		return fmt.Errorf("unknown encoding %s provided, supported values are: plain, dict", encoding)
 	}
 
 	writer := parquet.NewGenericWriter[T](f, options...)
@@ -139,7 +157,7 @@ func writeRows[T any](path string, rows []T, rowGroupSize int64, compression str
 	return nil
 }
 
-func buildRows(n int) []row {
+func buildRows(n int, nulls string) []row {
 	rows := make([]row, 0, n)
 	currentRowNumber := int64(0)
 	randGen := rand.New(rand.NewSource(42))
@@ -149,19 +167,24 @@ func buildRows(n int) []row {
 		currentRowNumber++
 		n--
 		var r row
+		setEven := nulls == "no_nulls" || (nulls == "" && currentRowNumber%2 == 0)
+		setOpt := nulls == "no_nulls" || (nulls == "" && currentRowNumber%3 == 0)
 		r.RowNumber = currentRowNumber
 		r.RandId = fmt.Sprintf("id-%04d", currentRowNumber)
 		r.IsOdd = true
 
-		if currentRowNumber%2 == 0 {
-			evenRow := currentRowNumber
-			r.EvenRowNumber = &evenRow
-			r.IsOdd = false
+		if setEven {
+			row := currentRowNumber
+			r.EvenRowNumber = &row
 		}
 
-		if currentRowNumber%3 == 0 {
+		if setOpt {
 			randId := fmt.Sprintf("opt-%04d", currentRowNumber)
 			r.OptRandId = &randId
+		}
+
+		if currentRowNumber%2 == 0 {
+			r.IsOdd = false
 		}
 
 		r.Category = category[randGen.Intn(4)]

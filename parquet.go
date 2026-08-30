@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
+	"github.com/klauspost/compress/zstd"
 	"github.com/sevaergdm/sawdust/internal/thrift"
 )
 
@@ -20,13 +22,110 @@ type File struct {
 	Size     int64
 	Footer   Footer
 	Metadata FileMetadata
+	zstdDec  *zstd.Decoder
+}
+
+func (f *File) zstdDecoder() (*zstd.Decoder, error) {
+	if f.zstdDec == nil {
+		dec, err := zstd.NewReader(nil)
+		if err != nil {
+			return nil, err
+		}
+		f.zstdDec = dec
+	}
+	return f.zstdDec, nil
 }
 
 func (f *File) Close() error {
+	if f.zstdDec != nil {
+		f.zstdDec.Close()
+	}
 	if f.closer == nil {
 		return nil
 	}
 	return f.closer.Close()
+}
+
+func (f *File) ReadInt64Column(col string) ([]int64, error) {
+	var output []int64
+	dec, err := f.zstdDecoder()
+	if err != nil {
+		return nil, err
+	}
+
+	root, err := BuildTree(f.Metadata.Schema)
+	if err != nil {
+		return nil, err
+	}
+
+	columns := Columns(root)
+	colName := ""
+	var colType PhysicalType
+	for _, c := range columns {
+		name := strings.Join(c.Path, ".")
+		t := c.Element.Type
+
+		if name == col {
+			colName = name
+			if t == nil {
+				return nil, fmt.Errorf("no column type defined in schema for %q", col)
+			}
+
+			if *t != TypeInt64 {
+				return nil, fmt.Errorf("column %q is not an int64 and not yet supported", col)
+			}
+			colType = *t
+			break
+		}
+	}
+
+	if colName == "" {
+		return nil, fmt.Errorf("%s not found in schema", col)
+	}
+
+	for _, group := range f.Metadata.RowGroups {
+		for _, c := range group.Columns {
+			if c.Metadata == nil {
+				continue
+			}
+
+			if strings.Join(c.Metadata.PathInSchema, ".") != col {
+				continue
+			}
+
+			if c.Metadata.Type != colType {
+				return nil, fmt.Errorf("malformed column %q: type %s does not match schema defined type %s", col, c.Metadata.Type, colType)
+			}
+
+			pages, err := f.ReadPages(c)
+			if err != nil {
+				return nil, fmt.Errorf("page read error for %q: %w", col, err)
+			}
+
+			for _, page := range pages {
+				pageHeader := page.Header.DataPageHeaderV2
+				if pageHeader == nil {
+					return nil, fmt.Errorf("page error: no data page header provided for %q", col)
+				}
+
+				if pageHeader.Encoding != EncodingPlain {
+					return nil, fmt.Errorf("page error: encoding for column %q (%s) must be PLAIN", col, pageHeader.Encoding)
+				}
+
+				decompressed, err := page.decompressZstd(dec)
+				if err != nil {
+					return nil, fmt.Errorf("decompression error on %q: %w", col, err)
+				}
+
+				vals, err := decodePlainInt64(decompressed)
+				if err != nil {
+					return nil, fmt.Errorf("decoding error on %q: %w", col, err)
+				}
+				output = append(output, vals...)
+			}
+		}
+	}
+	return output, nil
 }
 
 func (f *File) ReadPages(chunk ColumnChunk) ([]Page, error) {
