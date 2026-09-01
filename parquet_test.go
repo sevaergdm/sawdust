@@ -193,22 +193,78 @@ func TestReadPagesErr(t *testing.T) {
 	}
 }
 
-func TestReadInt64Column(t *testing.T) {
+func TestReadColumn(t *testing.T) {
 	tests := []struct {
 		name       string
 		path       string
 		column     string
-		want       []int64
+		want       ColumnValues
 		wantErr    bool
 		wantErrMsg string
 	}{
-		{name: "basic", path: "testdata/basic.parquet", column: "row_number", want: genInt64(100), wantErr: false},
-		{name: "zstd", path: "testdata/zstd.parquet", column: "row_number", want: genInt64(100), wantErr: false},
-		{name: "many_rows", path: "testdata/many_rows.parquet", column: "row_number", want: genInt64(300), wantErr: false},
-		{name: "single_row", path: "testdata/single_row.parquet", column: "row_number", want: genInt64(1), wantErr: false},
-		{name: "empty", path: "testdata/empty.parquet", column: "row_number", want: genInt64(0), wantErr: false},
-		{name: "wrong type", path: "testdata/basic.parquet", column: "category", wantErr: true, wantErrMsg: "not an int64"},
-		{name: "missing column", path: "testdata/basic.parquet", column: "fake", wantErr: true, wantErrMsg: "not found in schema"},
+		{
+			name:    "required int64",
+			path:    "testdata/basic.parquet",
+			column:  "row_number",
+			want:    Int64Values(ptrs(genInt64(100))),
+			wantErr: false,
+		},
+		{
+			name:    "optional int64",
+			path:    "testdata/basic.parquet",
+			column:  "even_row_number",
+			want:    altInt64(100),
+			wantErr: false,
+		},
+		{
+			name:    "boolean",
+			path:    "testdata/basic.parquet",
+			column:  "is_odd",
+			want:    altBool(100),
+			wantErr: false,
+		},
+		{
+			name:    "zstd",
+			path:    "testdata/zstd.parquet",
+			column:  "row_number",
+			want:    Int64Values(ptrs(genInt64(100))),
+			wantErr: false,
+		},
+		{
+			name:    "many_rows",
+			path:    "testdata/many_rows.parquet",
+			column:  "row_number",
+			want:    Int64Values(ptrs(genInt64(300))),
+			wantErr: false,
+		},
+		{
+			name:    "single_row",
+			path:    "testdata/single_row.parquet",
+			column:  "row_number",
+			want:    Int64Values(ptrs(genInt64(1))),
+			wantErr: false,
+		},
+		{
+			name:    "empty",
+			path:    "testdata/empty.parquet",
+			column:  "row_number",
+			want:    Int64Values(nil),
+			wantErr: false,
+		},
+		{
+			name:    "dict int64",
+			path:    "testdata/dict.parquet",
+			column:  "row_number",
+			want:    Int64Values(ptrs(genInt64(100))),
+			wantErr: false,
+		},
+		{
+			name:       "missing column",
+			path:       "testdata/basic.parquet",
+			column:     "fake",
+			wantErr:    true,
+			wantErrMsg: "not found in schema",
+		},
 	}
 
 	for _, tt := range tests {
@@ -219,7 +275,7 @@ func TestReadInt64Column(t *testing.T) {
 			}
 			defer func() { _ = f.Close() }()
 
-			got, err := f.ReadInt64Column(tt.column)
+			got, err := f.ReadColumn(tt.column)
 			if (err != nil) != tt.wantErr {
 				t.Fatalf("wantErr %v, got err %v", tt.wantErr, err)
 			}
@@ -238,6 +294,79 @@ func TestReadInt64Column(t *testing.T) {
 	}
 }
 
+func TestReadColumnDouble(t *testing.T) {
+	f, err := OpenFile("testdata/basic.parquet")
+	if err != nil {
+		t.Fatalf("OpenFile: %v", err)
+	}
+	defer func() { _ = f.Close() }()
+
+	got, err := f.ReadColumn("rand_float")
+	if err != nil {
+		t.Fatalf("ReadColumn: %v", err)
+	}
+	vals, ok := got.(DoubleValues)
+	if !ok {
+		t.Fatalf("want DoubleValues, got %T", got)
+	}
+	if len(vals) != 100 {
+		t.Fatalf("want 100 values, but got %d", len(vals))
+	}
+
+	spot := map[int]float64{
+		0:  0.06600049679351791,
+		1:  0.20881870305465913,
+		98: 0.30039777118814476,
+		99: 0.3050981562276182,
+	}
+
+	for i, want := range spot {
+		if vals[i] == nil {
+			t.Errorf("index %d: unexpected null", i)
+			continue
+		}
+		if *vals[i] != want {
+			t.Errorf("index %d: want %v, got %v", i, want, *vals[i])
+		}
+	}
+}
+
+func TestReadColumnByteArray(t *testing.T) {
+	f, err := OpenFile("testdata/plain.parquet")
+	if err != nil {
+		t.Fatalf("OpenFile: %v", err)
+	}
+	defer func() { _ = f.Close() }()
+
+	got, err := f.ReadColumn("category")
+	if err != nil {
+		t.Fatalf("ReadColumn: %v", err)
+	}
+	vals, ok := got.(ByteArrayValues)
+	if !ok {
+		t.Fatalf("want ByteArrayValues, got %T", got)
+	}
+	if len(vals) != 100 {
+		t.Fatalf("want 100 values, but got %d", len(vals))
+	}
+
+	spot := map[int]string{
+		0: "bar",
+		1: "foo",
+		2: "buzz",
+		3: "bar",
+	}
+
+	for i, want := range spot {
+		if vals[i] == nil {
+			t.Errorf("index %d: unexpected null", i)
+		}
+		if string(*vals[i]) != want {
+			t.Errorf("index %d: want %s, got %s", i, want, string(*vals[i]))
+		}
+	}
+}
+
 func TestReadInt64ColumnBasicZstd(t *testing.T) {
 	basic, err := OpenFile("testdata/basic.parquet")
 	if err != nil {
@@ -251,12 +380,12 @@ func TestReadInt64ColumnBasicZstd(t *testing.T) {
 	}
 	defer func() { _ = zstd.Close() }()
 
-	gotBasic, err := basic.ReadInt64Column("row_number")
+	gotBasic, err := basic.ReadColumn("row_number")
 	if err != nil {
 		t.Fatalf("wanted no error, but got: %v", err)
 	}
 
-	gotZstd, err := zstd.ReadInt64Column("row_number")
+	gotZstd, err := zstd.ReadColumn("row_number")
 	if err != nil {
 		t.Fatalf("wanted no error, but got: %v", err)
 	}
@@ -275,4 +404,32 @@ func genInt64(limit int) []int64 {
 		output = append(output, int64(i))
 	}
 	return output
+}
+
+func altInt64(n int) Int64Values {
+	out := make(Int64Values, 0, n)
+	for i := int64(1); i <= int64(n); i++ {
+		if i%2 == 0 {
+			out = append(out, ptr(i))
+		} else {
+			out = append(out, nil)
+		}
+	}
+	return out
+}
+
+func altBool(n int) BooleanValues {
+	out := make(BooleanValues, 0, n)
+	for i := 1; i <= n; i++ {
+		out = append(out, ptr(i%2 != 0))
+	}
+	return out
+}
+
+func ptrs[T any](vals []T) []*T {
+	out := make([]*T, 0, len(vals))
+	for i := range vals {
+		out = append(out, &vals[i])
+	}
+	return out
 }

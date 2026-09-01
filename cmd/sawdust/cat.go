@@ -3,7 +3,9 @@ package main
 import (
 	"flag"
 	"fmt"
+	"io"
 	"os"
+	"strconv"
 
 	"github.com/sevaergdm/sawdust"
 )
@@ -26,13 +28,43 @@ func cmdCat(args []string) {
 	}
 	defer func() { _ = file.Close() }()
 
-	vals, err := file.ReadInt64Column(col)
+	vals, err := file.ReadColumn(col)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
 
-	for _, v := range vals {
-		fmt.Println(v)
+	switch v := vals.(type) {
+	case sawdust.Int64Values:
+		err = printAll(os.Stdout, v, func(x int64) string { return strconv.FormatInt(x, 10) })
+	case sawdust.DoubleValues:
+		err = printAll(os.Stdout, v, func(x float64) string { return strconv.FormatFloat(x, 'g', -1, 64) })
+	case sawdust.ByteArrayValues:
+		err = printAll(os.Stdout, v, func(x []byte) string { return string(x) })
+	case sawdust.BooleanValues:
+		err = printAll(os.Stdout, v, func(x bool) string { return strconv.FormatBool(x) })
+	default:
+		err = fmt.Errorf("unsupported type %s", v)
 	}
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "encountered an error printing values: %v", err)
+	}
+
+}
+
+func printAll[T any](w io.Writer, vals []*T, format func(T) string) error {
+	for _, p := range vals {
+		if p == nil {
+			_, err := fmt.Fprintln(w, "")
+			if err != nil {
+				return err
+			}
+			continue
+		}
+
+		if _, err := fmt.Fprintln(w, format(*p)); err != nil {
+			return err
+		}
+	}
+	return nil
 }

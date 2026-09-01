@@ -1045,38 +1045,68 @@ the data page's value region, not something derivable from the schema.
 
 Ordered so each item has what it needs from the one before:
 
-- [ ] Given RLE/bit-packed bytes and a bit width, produce integers. This is the
+- [X] Given RLE/bit-packed bytes and a bit width, produce integers. This is the
       foundation for two separate things — definition levels and dictionary
       indices — so it takes a bit width as input and knows nothing about either.
-      - [ ] **Done when:** it round-trips the definition-level stream of
+      - [X] **Done when:** it round-trips the definition-level stream of
             `even_row_number` into 100 levels of which 50 are 1
-- [ ] Given a page's definition levels and its stored values, produce
+- [X] Given a page's definition levels and its stored values, produce
       `num_values` slots with the nulls in the right places. This is the step
       that reunites the two counts above, and getting it wrong shifts every
       value after the first null.
-      - [ ] **Done when:** `even_row_number` comes back as alternating
+      - [X] **Done when:** `even_row_number` comes back as alternating
             value/null across all 100 rows
-- [ ] Decide how a column read returns different Go types. Stage 4 deferred this
+- [X] Decide how a column read returns different Go types. Stage 4 deferred this
       while `int64` was the only case; this stage has four more (byte array,
       double, boolean, and dictionary-indirected versions of each). The
       chunk-reading call from stage 4 has one return type and now needs several.
       Weigh a per-type method, a sealed interface like `LogicalType`, generics,
       and `any` — this is a design decision, not a lookup, and it shapes every
       item below it.
-- [ ] Given PLAIN BYTE_ARRAY bytes, produce values. Each is a 4-byte
-      little-endian length followed by that many bytes. The schema's UTF-8
-      annotation decides `string` versus `[]byte`.
-- [ ] Given PLAIN DOUBLE and BOOLEAN bytes, produce values. Doubles are IEEE 754
+- [X] Given PLAIN BYTE_ARRAY bytes, produce values. Each is a 4-byte
+      little-endian length followed by that many bytes.
+- [X] Given PLAIN DOUBLE and BOOLEAN bytes, produce values. Doubles are IEEE 754
       little-endian; booleans are bit-packed LSB-first, so the byte count is not
       the value count.
-- [ ] Given a column chunk whose pages are dictionary-encoded, produce values.
+- [X] Given a column chunk whose pages are dictionary-encoded, produce values.
       Two composition problems here, not one: the chunk's first page is a
       `DICTIONARY_PAGE` that must be decoded before any data page can be
       interpreted, and the chunk start moves from `data_page_offset` to
       `dictionary_page_offset`. The data pages then hold indices, which go
       through the RLE decoder and get mapped back to dictionary entries.
-      - [ ] **Done when:** a dictionary-encoded column and a plain-encoded
+      - [X] **Done when:** a dictionary-encoded column and a plain-encoded
             column holding the same data decode to identical values
+- [ ] Given DELTA_LENGTH_BYTE_ARRAY bytes, produce values. **This is the
+      largest remaining gap:** parquet-go writes it by default for every byte
+      array, so 30 of the 94 chunks across your fixtures use it and are
+      unreadable today. `plain.parquet` and `dict.parquet` are the only files
+      whose byte-array columns you can read at all.
+      The encoding is two regions: a DELTA_BINARY_PACKED block of lengths,
+      followed by every value's bytes concatenated with no separators. So it
+      needs the delta-binary-packed decoder first, even though no fixture uses
+      that encoding on its own.
+      DELTA_BINARY_PACKED is the most involved encoding in the format. Its
+      header is four varints (block size, miniblocks per block, total count,
+      first value). Each block then carries a zigzag min-delta, one bit-width
+      byte per miniblock, and bit-packed deltas. Values come back by cumulative
+      sum from the first value. Read `Encodings.md` in full before starting;
+      this one is not derivable from the shape of the bytes.
+      - [ ] **Done when:** `category` from `basic.parquet` decodes identically
+            to `category` from `plain.parquet` — the same pairing that verified
+            the dictionary path
+- [ ] Decide whether an annotated BYTE_ARRAY column gets its own variant.
+      Deferred from the PLAIN BYTE_ARRAY item on purpose: the decoder is at the
+      physical layer and knows only bytes, while UTF-8 is a *logical* type
+      question, answered by `SchemaElement.LogicalType` being a `StringType` or
+      `ConvertedType` being `ConvertedUTF8`. Three of `basic.parquet`'s columns
+      carry both annotations.
+      The decision is whether `ReadColumn` returns a separate `StringValues`
+      for annotated columns, or one `ByteArrayValues` and the caller converts.
+      A Go `string` is immutable, so the string path costs a copy per value
+      that the byte path avoids — that cost is the trade-off, not an
+      implementation detail.
+      - [ ] **Done when:** `cat` prints text for an annotated column and does
+            something deliberate (not accidental) for an unannotated one
 - [ ] Given INT64 values and the leaf's logical type, produce `time.Time` in
       UTC. The logical type distinguishes millis, micros and nanos, and says
       whether the value is already UTC-adjusted.
