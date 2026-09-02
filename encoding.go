@@ -31,6 +31,10 @@ type TimestampValues []*time.Time
 
 func (TimestampValues) isColumnValues() {}
 
+type StringValues []*string
+
+func (StringValues) isColumnValues() {}
+
 func decodePlainInt64(b []byte) ([]int64, error) {
 	if len(b)%8 != 0 {
 		return nil, fmt.Errorf("expected total bytes to be a multiple of 8, but got %d", len(b))
@@ -323,4 +327,17 @@ func toTimes(ts []*int64, tsType TimestampType) (TimestampValues, error) {
 		}
 	}
 	return TimestampValues(out), nil
+}
+
+func toStrings(vals []*[]byte) (StringValues, error) {
+	out := make([]*string, 0, len(vals))
+	for _, v := range vals {
+		if v == nil {
+			out = append(out, nil)
+			continue
+		}
+		s := string(*v)
+		out = append(out, &s)
+	}
+	return out, nil
 }

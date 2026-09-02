@@ -331,7 +331,7 @@ func TestReadColumnDouble(t *testing.T) {
 	}
 }
 
-func TestReadColumnByteArray(t *testing.T) {
+func TestReadColumnString(t *testing.T) {
 	f, err := OpenFile("testdata/plain.parquet")
 	if err != nil {
 		t.Fatalf("OpenFile: %v", err)
@@ -342,9 +342,9 @@ func TestReadColumnByteArray(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadColumn: %v", err)
 	}
-	vals, ok := got.(ByteArrayValues)
+	vals, ok := got.(StringValues)
 	if !ok {
-		t.Fatalf("want ByteArrayValues, got %T", got)
+		t.Fatalf("want StringValues, got %T", got)
 	}
 	if len(vals) != 100 {
 		t.Fatalf("want 100 values, but got %d", len(vals))
@@ -360,9 +360,45 @@ func TestReadColumnByteArray(t *testing.T) {
 	for i, want := range spot {
 		if vals[i] == nil {
 			t.Errorf("index %d: unexpected null", i)
+			continue
 		}
-		if string(*vals[i]) != want {
-			t.Errorf("index %d: want %s, got %s", i, want, string(*vals[i]))
+		if *vals[i] != want {
+			t.Errorf("index %d: want %s, got %s", i, want, *vals[i])
+		}
+	}
+}
+
+func TestReadColumnByteArray(t *testing.T) {
+	f, err := OpenFile("testdata/raw.parquet")
+	if err != nil {
+		t.Fatalf("OpenFile: %v", err)
+	}
+	defer func() { _ = f.Close() }()
+
+	got, err := f.ReadColumn("raw")
+	if err != nil {
+		t.Fatalf("ReadColumn: %v", err)
+	}
+	vals, ok := got.(ByteArrayValues)
+	if !ok {
+		t.Fatalf("want ByteArrayValues, got %T", got)
+	}
+	if len(vals) != 100 {
+		t.Fatalf("want 100 values, but got %d", len(vals))
+	}
+
+	spot := map[int][]byte{
+		0: {0x00, 0x1b, 0x01, 0xff},
+		4: {},
+	}
+
+	for i, want := range spot {
+		if vals[i] == nil {
+			t.Errorf("index %d: unexpected nil", i)
+			continue
+		}
+		if diff := cmp.Diff(want, *vals[i]); diff != "" {
+			t.Errorf("index %d: mismatch (want- got+):\n%s", i, diff)
 		}
 	}
 }

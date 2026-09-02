@@ -1094,22 +1094,53 @@ Ordered so each item has what it needs from the one before:
       - [X] **Done when:** `category` from `basic.parquet` decodes identically
             to `category` from `plain.parquet` — the same pairing that verified
             the dictionary path
-- [ ] Decide whether an annotated BYTE_ARRAY column gets its own variant.
-      Deferred from the PLAIN BYTE_ARRAY item on purpose: the decoder is at the
-      physical layer and knows only bytes, while UTF-8 is a *logical* type
-      question, answered by `SchemaElement.LogicalType` being a `StringType` or
-      `ConvertedType` being `ConvertedUTF8`. Three of `basic.parquet`'s columns
-      carry both annotations.
-      The decision is whether `ReadColumn` returns a separate `StringValues`
-      for annotated columns, or one `ByteArrayValues` and the caller converts.
-      A Go `string` is immutable, so the string path costs a copy per value
-      that the byte path avoids — that cost is the trade-off, not an
-      implementation detail.
-      - [ ] **Done when:** `cat` prints text for an annotated column and does
-            something deliberate (not accidental) for an unannotated one
+- [ ] Separate text byte arrays from opaque ones. Today every `ByteArrayValues`
+      is rendered as text whether annotated or not — correct by accident for
+      these fixtures, wrong for a column holding real binary. `1b 5b 32 4a` is
+      the ANSI escape for "clear screen"; printed raw it wipes the terminal.
+      Same post-`collect` shape the timestamp conversion uses.
+      Detection must prefer `LogicalType` and fall back to `ConvertedType`,
+      because either can be absent: modern writers emit `StringType` **and**
+      `ConvertedUTF8`, older files carry only `ConvertedUTF8`, newer ones may
+      carry only `StringType`. Checking `ConvertedType` first would misread a
+      legacy annotation sitting beside a newer, more specific logical type.
+      - [X] A fixture holding both kinds. A Go `[]byte` field produces an
+            unannotated BYTE_ARRAY; a `string` field produces an annotated one.
+            Add a third value to the existing `-kind` flag with its own struct,
+            the way `nested` works — not a field on `row`, which is the struct
+            behind eight fixtures and would change all their bytes.
+      - [X] `StringValues []*string` variant
+      - [X] Capture the annotation in `ReadColumn`'s schema lookup, beside where
+            `logicalType` is already captured for timestamps
+      - [X] Convert after `collect`: annotated → `StringValues`, unannotated →
+            `ByteArrayValues` unchanged
+      - [X] `cat` gains a case for each — text for `StringValues`, **hex** for
+            `ByteArrayValues`, because hex cannot emit control characters
+      - [X] **Done when:** the two columns of the new fixture print as text and
+            as hex respectively
+
 - [X] Given INT64 values and the leaf's logical type, produce `time.Time` in
       UTC. The logical type distinguishes millis, micros and nanos, and says
       whether the value is already UTC-adjusted.
+- [ ] Repetition levels — **missing from this list until now**, though
+      `nested.parquet` has had a repeated column since stage 0. `tags` is a
+      `[]string`, so a row holds zero, one or two values: 100 rows produce 133
+      values. Definition levels alone cannot say which row each belongs to, so
+      reading it returns a flat sequence with no grouping.
+      A repetition level of 0 means "this value starts a new row"; 1 means "this
+      value continues the list already being built". The stream uses the same
+      RLE/bit-packing hybrid as definition levels, at a width derived from
+      `MaxRepetitionLevel` — so `decodeRLE` already handles the bytes. What is
+      missing is reading and using them.
+      `ReadColumn` errors on `MaxRepetitionLevel > 0` today, which is the right
+      refusal but not a capability. Row assembly depends on this: a zip across
+      columns needs every column to yield exactly one entry per row, and `tags`
+      yields 133 for 100 rows.
+      - [ ] A variant that holds a list per row, or an explicit decision that
+            lists stay out of scope and the error is the final answer. This is a
+            design choice, not a lookup.
+      - [ ] **Done when:** `tags` from `nested.parquet` groups as
+            `[tag-1-0]`, `[tag-2-0, tag-2-1]`, `[]`, matching DuckDB
 - [ ] Assemble whole rows: given every leaf column of one row group, produce one
       record per row. This is a zip across columns rather than a decode, and it
       is the first code that needs all columns at once instead of one at a time.

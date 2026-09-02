@@ -37,6 +37,11 @@ type nestedRow struct {
 	Tags  []string `parquet:"tags"`
 }
 
+type rawRow struct {
+	Text string `parquet:"text"`
+	Raw  []byte `parquet:"raw"`
+}
+
 // Command genfix generates the Parquet fixtures in testdata/.
 //
 // The committed fixtures were produced with
@@ -84,8 +89,10 @@ func main() {
 		err = writeRows(path, buildRows(*numRows, *nulls), *rowGroupSize, *compression, *pageBufferSize, *encoding)
 	case "nested":
 		err = writeRows(path, buildNestedRows(*numRows), *rowGroupSize, *compression, *pageBufferSize, *encoding)
+	case "raw":
+		err = writeRows(path, buildRawRows(*numRows), *rowGroupSize, *compression, *pageBufferSize, *encoding)
 	default:
-		err = fmt.Errorf("unknown kind: %s. Only rows and nested accepted", *kind)
+		err = fmt.Errorf("unknown kind: %s. Only row, nested, and raw accepted", *kind)
 	}
 
 	if err != nil {
@@ -209,6 +216,20 @@ func buildNestedRows(n int) []nestedRow {
 		}
 		for j := 0; j < i%3; j++ {
 			r.Tags = append(r.Tags, fmt.Sprintf("tag-%d-%d", i, j))
+		}
+		rows = append(rows, r)
+	}
+	return rows
+}
+
+func buildRawRows(n int) []rawRow {
+	rows := make([]rawRow, 0, n)
+	for i := 1; i <= n; i++ {
+		var r rawRow
+		r.Text = fmt.Sprintf("txt-%04d", i)
+		r.Raw = []byte{0x00, 0x1b, byte(i), 0xff}
+		if i%5 == 0 {
+			r.Raw = []byte{}
 		}
 		rows = append(rows, r)
 	}

@@ -108,6 +108,7 @@ func (f *File) ReadColumn(col string) (ColumnValues, error) {
 	colName := ""
 	maxDefLevel := int64(-1)
 	var logicalType LogicalType
+	var convertedType *ConvertedType
 	var colType PhysicalType
 	for _, c := range columns {
 		name := strings.Join(c.Path, ".")
@@ -123,6 +124,7 @@ func (f *File) ReadColumn(col string) (ColumnValues, error) {
 			}
 			maxDefLevel = int64(c.MaxDefinitionLevel)
 			logicalType = c.Element.LogicalType
+			convertedType = c.Element.ConvertedType
 			colType = *t
 			break
 		}
@@ -190,6 +192,21 @@ func (f *File) ReadColumn(col string) (ColumnValues, error) {
 		if err != nil {
 			return nil, err
 		}
+		isText := false
+		if _, ok := logicalType.(StringType); ok {
+			isText = true
+		} else if logicalType == nil && convertedType != nil && *convertedType == ConvertedUTF8 {
+			isText = true
+		}
+
+		if isText {
+			stringOut, err := toStrings(out)
+			if err != nil {
+				return nil, err
+			}
+			return stringOut, nil
+		}
+
 		return ByteArrayValues(out), nil
 	case TypeBoolean:
 		out, err := collect(f, chunks, maxDefLevel, func(b []byte, _ Encoding, count int) ([]bool, error) { return decodePlainBoolean(b, count) })

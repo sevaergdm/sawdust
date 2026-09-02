@@ -18,3 +18,5 @@ go run ./cmd/genfix -out "$1" -file_name optionals_all_null   -num_rows 100 -nul
 go run ./cmd/genfix -out "$1" -file_name optionals_never_null -num_rows 100 -null=no_nulls
 go run ./cmd/genfix -out "$1" -file_name plain                -num_rows 100 -encoding=plain
 go run ./cmd/genfix -out "$1" -file_name dict                 -num_rows 100 -encoding=dict
+go run ./cmd/genfix -out "$1" -file_name raw                  -num_rows 100 -kind=raw
+go run ./cmd/genfix -out "$1" -file_name raw_plain            -num_rows 100 -kind=raw -encoding=plain

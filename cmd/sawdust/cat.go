@@ -40,8 +40,10 @@ func cmdCat(args []string) {
 		err = printAll(os.Stdout, v, func(x int64) string { return strconv.FormatInt(x, 10) })
 	case sawdust.DoubleValues:
 		err = printAll(os.Stdout, v, func(x float64) string { return strconv.FormatFloat(x, 'g', -1, 64) })
+	case sawdust.StringValues:
+		err = printAll(os.Stdout, v, func(x string) string { return x })
 	case sawdust.ByteArrayValues:
-		err = printAll(os.Stdout, v, func(x []byte) string { return string(x) })
+		err = printAll(os.Stdout, v, func(x []byte) string { return fmt.Sprintf("%x", x) })
 	case sawdust.BooleanValues:
 		err = printAll(os.Stdout, v, func(x bool) string { return strconv.FormatBool(x) })
 	case sawdust.TimestampValues:
