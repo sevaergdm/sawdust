@@ -1076,7 +1076,7 @@ Ordered so each item has what it needs from the one before:
       through the RLE decoder and get mapped back to dictionary entries.
       - [X] **Done when:** a dictionary-encoded column and a plain-encoded
             column holding the same data decode to identical values
-- [ ] Given DELTA_LENGTH_BYTE_ARRAY bytes, produce values. **This is the
+- [X] Given DELTA_LENGTH_BYTE_ARRAY bytes, produce values. **This is the
       largest remaining gap:** parquet-go writes it by default for every byte
       array, so 30 of the 94 chunks across your fixtures use it and are
       unreadable today. `plain.parquet` and `dict.parquet` are the only files
@@ -1091,7 +1091,7 @@ Ordered so each item has what it needs from the one before:
       byte per miniblock, and bit-packed deltas. Values come back by cumulative
       sum from the first value. Read `Encodings.md` in full before starting;
       this one is not derivable from the shape of the bytes.
-      - [ ] **Done when:** `category` from `basic.parquet` decodes identically
+      - [X] **Done when:** `category` from `basic.parquet` decodes identically
             to `category` from `plain.parquet` — the same pairing that verified
             the dictionary path
 - [ ] Decide whether an annotated BYTE_ARRAY column gets its own variant.

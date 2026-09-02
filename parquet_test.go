@@ -367,34 +367,6 @@ func TestReadColumnByteArray(t *testing.T) {
 	}
 }
 
-func TestReadInt64ColumnBasicZstd(t *testing.T) {
-	basic, err := OpenFile("testdata/basic.parquet")
-	if err != nil {
-		t.Fatalf("OpenFile: %v", err)
-	}
-	defer func() { _ = basic.Close() }()
-
-	zstd, err := OpenFile("testdata/zstd.parquet")
-	if err != nil {
-		t.Fatalf("OpenFile: %v", err)
-	}
-	defer func() { _ = zstd.Close() }()
-
-	gotBasic, err := basic.ReadColumn("row_number")
-	if err != nil {
-		t.Fatalf("wanted no error, but got: %v", err)
-	}
-
-	gotZstd, err := zstd.ReadColumn("row_number")
-	if err != nil {
-		t.Fatalf("wanted no error, but got: %v", err)
-	}
-
-	if diff := cmp.Diff(gotBasic, gotZstd); diff != "" {
-		t.Errorf("mismatch (-want +got):\n%s", diff)
-	}
-}
-
 func genInt64(limit int) []int64 {
 	if limit == 0 {
 		return nil
@@ -432,4 +404,65 @@ func ptrs[T any](vals []T) []*T {
 		out = append(out, &vals[i])
 	}
 	return out
+}
+
+func TestReadColumnEncodingsAgree(t *testing.T) {
+	tests := []struct {
+		name    string
+		input1  string
+		input2  string
+		columns []string
+	}{
+		{
+			name:    "delta vs plain",
+			input1:  "testdata/basic.parquet",
+			input2:  "testdata/plain.parquet",
+			columns: []string{"rand_id", "opt_rand_id", "category"},
+		},
+		{
+			name:    "dict vs plain",
+			input1:  "testdata/dict.parquet",
+			input2:  "testdata/plain.parquet",
+			columns: []string{"rand_id", "opt_rand_id", "category"},
+		},
+		{
+			name:    "basic vs zstd",
+			input1:  "testdata/basic.parquet",
+			input2:  "testdata/zstd.parquet",
+			columns: []string{"row_number"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f1, err := OpenFile(tt.input1)
+			if err != nil {
+				t.Fatalf("unexpected error opening %s: %v", tt.input1, err)
+			}
+			defer func() { _ = f1.Close() }()
+
+			f2, err := OpenFile(tt.input2)
+			if err != nil {
+				t.Fatalf("unexpected error opening %s: %v", tt.input1, err)
+			}
+			defer func() { _ = f2.Close() }()
+
+			for _, c := range tt.columns {
+				gotInput1, err := f1.ReadColumn(c)
+				if err != nil {
+					t.Fatalf("unexpected error reading column %s in %s: %v", c, tt.input1, err)
+				}
+
+				gotInput2, err := f2.ReadColumn(c)
+				if err != nil {
+					t.Fatalf("unexpected error reading column %s in %s: %v", c, tt.input2, err)
+				}
+
+				if diff := cmp.Diff(gotInput1, gotInput2); diff != "" {
+					t.Errorf("mismatched output (-%s +%s): %s", tt.input1, tt.input2, diff)
+				}
+
+			}
+		})
+	}
 }
