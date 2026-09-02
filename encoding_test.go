@@ -210,7 +210,7 @@ func TestDecodeRLE(t *testing.T) {
 		input      []byte
 		bitWidth   int
 		count      int
-		want       []int32
+		want       []int64
 		wantErr    bool
 		wantErrMsg string
 	}{
@@ -228,7 +228,7 @@ func TestDecodeRLE(t *testing.T) {
 			input:    []byte{0x08, 0x02, 0x03, 0xe4, 0x1b},
 			bitWidth: 2,
 			count:    12,
-			want:     []int32{2, 2, 2, 2, 0, 1, 2, 3, 3, 2, 1, 0},
+			want:     []int64{2, 2, 2, 2, 0, 1, 2, 3, 3, 2, 1, 0},
 			wantErr:  false,
 		},
 	}
@@ -259,16 +259,16 @@ func TestDecodeRLE(t *testing.T) {
 func TestApplyDefinitionLevels(t *testing.T) {
 	tests := []struct {
 		name        string
-		defLevels   []int32
+		defLevels   []int64
 		values      []int64
-		maxDefLevel int32
+		maxDefLevel int64
 		want        []*int64
 		wantErr     bool
 		wantErrMsg  string
 	}{
 		{
 			name:        "basic int64, alternating nils",
-			defLevels:   []int32{1, 0, 1, 0, 1, 0, 1, 0, 1, 0},
+			defLevels:   []int64{1, 0, 1, 0, 1, 0, 1, 0, 1, 0},
 			values:      []int64{5, 4, 3, 2, 1},
 			maxDefLevel: 1,
 			want:        []*int64{ptr(int64(5)), nil, ptr(int64(4)), nil, ptr(int64(3)), nil, ptr(int64(2)), nil, ptr(int64(1)), nil},
@@ -276,7 +276,7 @@ func TestApplyDefinitionLevels(t *testing.T) {
 		},
 		{
 			name:        "all nulls",
-			defLevels:   []int32{0, 0, 0, 0, 0},
+			defLevels:   []int64{0, 0, 0, 0, 0},
 			values:      []int64{},
 			maxDefLevel: 1,
 			want:        []*int64{nil, nil, nil, nil, nil},
@@ -284,7 +284,7 @@ func TestApplyDefinitionLevels(t *testing.T) {
 		},
 		{
 			name:        "no nulls",
-			defLevels:   []int32{1, 1, 1, 1, 1},
+			defLevels:   []int64{1, 1, 1, 1, 1},
 			values:      []int64{5, 4, 3, 2, 1},
 			maxDefLevel: 1,
 			want:        []*int64{ptr(int64(5)), ptr(int64(4)), ptr(int64(3)), ptr(int64(2)), ptr(int64(1))},
@@ -292,7 +292,7 @@ func TestApplyDefinitionLevels(t *testing.T) {
 		},
 		{
 			name:        "nested: intermediate level is null",
-			defLevels:   []int32{2, 1, 0, 2},
+			defLevels:   []int64{2, 1, 0, 2},
 			values:      []int64{10, 20},
 			maxDefLevel: 2,
 			want:        []*int64{ptr(int64(10)), nil, nil, ptr(int64(20))},
@@ -300,7 +300,7 @@ func TestApplyDefinitionLevels(t *testing.T) {
 		},
 		{
 			name:        "error: cursor exceeds",
-			defLevels:   []int32{1, 1, 1, 1, 1, 1},
+			defLevels:   []int64{1, 1, 1, 1, 1, 1},
 			values:      []int64{1, 2, 3, 4},
 			maxDefLevel: 1,
 			wantErr:     true,
@@ -308,7 +308,7 @@ func TestApplyDefinitionLevels(t *testing.T) {
 		},
 		{
 			name:        "error: values left unconsumed",
-			defLevels:   []int32{1, 0, 1, 1},
+			defLevels:   []int64{1, 0, 1, 1},
 			values:      []int64{1, 2, 3, 4},
 			maxDefLevel: 1,
 			wantErr:     true,
@@ -338,7 +338,7 @@ func TestApplyDefinitionLevels(t *testing.T) {
 }
 
 func TestApplyDefinitionLevelsString(t *testing.T) {
-	defLevels := []int32{1, 0, 1, 1, 0}
+	defLevels := []int64{1, 0, 1, 1, 0}
 	values := []string{"a", "b", "c"}
 	want := []*string{ptr(string("a")), nil, ptr(string("b")), ptr(string("c")), nil}
 
@@ -352,8 +352,8 @@ func TestApplyDefinitionLevelsString(t *testing.T) {
 	}
 }
 
-func genAlt(n int) []int32 {
-	out := make([]int32, 0, n)
+func genAlt(n int) []int64 {
+	out := make([]int64, 0, n)
 	for i := range n {
 		if i%2 == 0 {
 			out = append(out, 0)

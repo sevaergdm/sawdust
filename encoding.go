@@ -100,10 +100,9 @@ func decodePlainByteArray(b []byte) ([][]byte, error) {
 // decodeRLE decodes the RLE/bit-packing hybrid (Parquet encoding 3) used for
 // both definition levels and dictionary indices. bitWidth is derived from the
 // schema for levels, and read from the data for dictionary indices.
-func decodeRLE(b []byte, bitWidth, count int) ([]int32, error) {
+func decodeRLE(b []byte, bitWidth, count int) ([]int64, error) {
 	pos := 0
-	out := make([]int32, 0, count)
-	mask := uint64(1)<<bitWidth - 1
+	out := make([]int64, 0, count)
 
 	for len(out) < count {
 		d := thrift.NewDecoder(b[pos:])
@@ -116,37 +115,26 @@ func decodeRLE(b []byte, bitWidth, count int) ([]int32, error) {
 		// bit packed
 		if v&0x01 == 0x01 {
 			groups := int(v >> 1)
-			numBytes := groups * bitWidth
-			if numBytes < 0 || pos+numBytes > len(b) {
-				return nil, fmt.Errorf("run needs %d bytes at %d, but only %d remain", numBytes, pos, len(b)-pos)
+			packedOut, bytesConsumed, err := unpackBits(b[pos:], bitWidth, groups*8)
+			if err != nil {
+				return nil, err
 			}
-			for i := 0; i < groups*8; i++ {
-				bitOffset := i * bitWidth
-				byteIndex := pos + bitOffset/8
-				shift := bitOffset % 8
-
-				var chunk uint64
-				for j := 0; j < 8 && byteIndex+j < len(b); j++ {
-					chunk |= uint64(b[byteIndex+j]) << (8 * j)
-				}
-
-				val := (chunk >> shift) & mask
-				out = append(out, int32(val))
-			}
-			pos += numBytes
+			out = append(out, packedOut...)
+			pos += bytesConsumed
 			// RLE
 		} else {
+			mask := uint64(1)<<bitWidth - 1
 			repeats := v >> 1
 			numBytes := (bitWidth + 7) / 8
 			if numBytes < 0 || pos+numBytes > len(b) {
 				return nil, fmt.Errorf("run needs %d bytes at %d, but only %d remain", numBytes, pos, len(b)-pos)
 			}
-			var val int32
+			var val int64
 			for i := range numBytes {
-				val |= int32(b[pos+i]) << (8 * i)
+				val |= int64(b[pos+i]) << (8 * i)
 			}
 
-			if val > int32(mask) {
+			if val > int64(mask) {
 				return nil, fmt.Errorf("value %d exceeds largest value possible in %d bits", val, bitWidth)
 			}
 
@@ -167,7 +155,7 @@ func decodeRLE(b []byte, bitWidth, count int) ([]int32, error) {
 //
 // The returned pointers alias values rather than copying it. Mutating values after the call changes
 // the result, and retaining any non-nil pointer keeps the whole values backing array alive.
-func applyDefinitionLevels[T any](levels []int32, values []T, maxDefLevel int32) ([]*T, error) {
+func applyDefinitionLevels[T any](levels []int64, values []T, maxDefLevel int64) ([]*T, error) {
 	var out []*T
 	cursor := 0
 
@@ -187,4 +175,123 @@ func applyDefinitionLevels[T any](levels []int32, values []T, maxDefLevel int32)
 		return nil, fmt.Errorf("levels said %d values were present, but only %d were stored", len(values), cursor)
 	}
 	return out, nil
+}
+
+func decodeDeltaLengthByteArray(b []byte) ([][]byte, error) {
+	lengths, consumed, err := decodeDeltaBinary(b)
+	if err != nil {
+		return nil, err
+	}
+	lengthSum := 0
+	for _, l := range lengths {
+		lengthSum += int(l)
+	}
+	if lengthSum != len(b)-consumed {
+		return nil, fmt.Errorf("mismatch sum of lengths (%d) should match available bytes (%d)", lengthSum, len(b)-consumed)
+	}
+
+	out := make([][]byte, 0, len(lengths))
+	cursor := consumed
+	for _, l := range lengths {
+		if l < 0 {
+			return nil, fmt.Errorf("malformed individual length: %d should be greater than 0", l)
+		}
+		out = append(out, b[cursor:cursor+int(l)])
+		cursor += int(l)
+	}
+	return out, nil
+}
+
+func decodeDeltaBinary(b []byte) ([]int64, int, error) {
+	d := thrift.NewDecoder(b)
+
+	blockSize, err := d.Varint()
+	if err != nil {
+		return nil, 0, fmt.Errorf("blockSize: %w", err)
+	}
+	if blockSize%128 != 0 {
+		return nil, 0, fmt.Errorf("invalid blocksize, must be a multiple of 128, but got %d", blockSize)
+	}
+
+	numMiniblocks, err := d.Varint()
+	if err != nil {
+		return nil, 0, fmt.Errorf("numMiniblocks: %v", err)
+	}
+	if numMiniblocks == 0 {
+		return nil, 0, fmt.Errorf("numMiniblocks cannot be 0")
+	}
+	if blockSize%numMiniblocks != 0 {
+		return nil, 0, fmt.Errorf("invalid number of miniblocks (%d), must be evenly divisible from block size (%d)", numMiniblocks, blockSize)
+	}
+
+	valuesPerMiniblock := blockSize / numMiniblocks
+	if valuesPerMiniblock%32 != 0 {
+		return nil, 0, fmt.Errorf("invalid number of values per miniblock %d, must be a multiple of 32", valuesPerMiniblock)
+	}
+
+	totalValueCount, err := d.Varint()
+	if err != nil {
+		return nil, 0, fmt.Errorf("totalValueCount: %w", err)
+	}
+
+	firstValue, err := d.Int64()
+	if err != nil {
+		return nil, 0, fmt.Errorf("firstValue: %w", err)
+	}
+
+	pos := d.Pos()
+	values := []int64{firstValue}
+
+	for len(values) < int(totalValueCount) {
+		md := thrift.NewDecoder(b[pos:])
+		minDelta, err := md.Int64()
+		if err != nil {
+			return nil, 0, fmt.Errorf("minDelta: %w", err)
+		}
+		pos += md.Pos()
+
+		if pos+int(numMiniblocks) > len(b) {
+			return nil, 0, fmt.Errorf("number of miniblocks (%d) exceeds total available bytes (%d)", numMiniblocks, len(b))
+		}
+
+		bitWidths := b[pos : pos+int(numMiniblocks)]
+		pos += int(numMiniblocks)
+
+		for _, w := range bitWidths {
+			vals, n, err := unpackBits(b[pos:], int(w), int(valuesPerMiniblock))
+			if err != nil {
+				return nil, 0, err
+			}
+			pos += n
+			for _, u := range vals {
+				prev := values[len(values)-1]
+				values = append(values, prev+minDelta+int64(u))
+			}
+		}
+	}
+	return values[:totalValueCount], pos, nil
+}
+
+func unpackBits(b []byte, bitWidth, count int) ([]int64, int, error) {
+	mask := uint64(1)<<bitWidth - 1
+	var out []int64
+	numBytes := count * bitWidth / 8
+	if numBytes < 0 || numBytes > len(b) {
+		return nil, 0, fmt.Errorf("run needs %d bytes, but only %d remain", numBytes, len(b))
+	}
+	for i := range count {
+		bitOffset := i * bitWidth
+		byteIndex := bitOffset / 8
+		shift := bitOffset % 8
+
+		var chunk uint64
+		for j := 0; j < 8 && byteIndex+j < len(b); j++ {
+			chunk |= uint64(b[byteIndex+j]) << (8 * j)
+		}
+
+		val := (chunk >> shift) & mask
+		out = append(out, int64(val))
+	}
+
+	return out, numBytes, nil
 }
