@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"strconv"
+	"time"
 
 	"github.com/sevaergdm/sawdust"
 )
@@ -43,6 +44,8 @@ func cmdCat(args []string) {
 		err = printAll(os.Stdout, v, func(x []byte) string { return string(x) })
 	case sawdust.BooleanValues:
 		err = printAll(os.Stdout, v, func(x bool) string { return strconv.FormatBool(x) })
+	case sawdust.TimestampValues:
+		err = printAll(os.Stdout, v, func(x time.Time) string { return x.Format(time.RFC3339) })
 	default:
 		err = fmt.Errorf("unsupported type %s", v)
 	}

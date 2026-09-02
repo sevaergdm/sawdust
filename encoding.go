@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"math"
+	"time"
 
 	"github.com/sevaergdm/sawdust/internal/thrift"
 )
@@ -25,6 +26,10 @@ func (DoubleValues) isColumnValues() {}
 type BooleanValues []*bool
 
 func (BooleanValues) isColumnValues() {}
+
+type TimestampValues []*time.Time
+
+func (TimestampValues) isColumnValues() {}
 
 func decodePlainInt64(b []byte) ([]int64, error) {
 	if len(b)%8 != 0 {
@@ -294,4 +299,28 @@ func unpackBits(b []byte, bitWidth, count int) ([]int64, int, error) {
 	}
 
 	return out, numBytes, nil
+}
+
+func toTimes(ts []*int64, tsType TimestampType) (TimestampValues, error) {
+	out := make([]*time.Time, 0, len(ts))
+	for _, t := range ts {
+		if t == nil {
+			out = append(out, nil)
+			continue
+		}
+		switch tsType.Unit {
+		case TimeMillis:
+			v := time.UnixMilli(*t).UTC()
+			out = append(out, &v)
+		case TimeMicros:
+			v := time.UnixMicro(*t).UTC()
+			out = append(out, &v)
+		case TimeNanos:
+			v := time.Unix(0, *t).UTC()
+			out = append(out, &v)
+		default:
+			return nil, fmt.Errorf("unsupported time unit %s", tsType.Unit)
+		}
+	}
+	return TimestampValues(out), nil
 }

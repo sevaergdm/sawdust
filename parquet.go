@@ -107,6 +107,7 @@ func (f *File) ReadColumn(col string) (ColumnValues, error) {
 	columns := Columns(root)
 	colName := ""
 	maxDefLevel := int64(-1)
+	var logicalType LogicalType
 	var colType PhysicalType
 	for _, c := range columns {
 		name := strings.Join(c.Path, ".")
@@ -121,6 +122,7 @@ func (f *File) ReadColumn(col string) (ColumnValues, error) {
 				return nil, fmt.Errorf("column %q is a repeated (list) column, which is not yet supported", col)
 			}
 			maxDefLevel = int64(c.MaxDefinitionLevel)
+			logicalType = c.Element.LogicalType
 			colType = *t
 			break
 		}
@@ -155,6 +157,17 @@ func (f *File) ReadColumn(col string) (ColumnValues, error) {
 		out, err := collect(f, chunks, maxDefLevel, func(b []byte, _ Encoding, _ int) ([]int64, error) { return decodePlainInt64(b) })
 		if err != nil {
 			return nil, err
+		}
+		if ts, ok := logicalType.(TimestampType); ok {
+			if !ts.IsAdjustedToUTC {
+				return nil, fmt.Errorf("column %q: timestamps without UTC adjustment are not supported", col)
+			}
+			timeOut, err := toTimes(out, ts)
+			if err != nil {
+				return nil, fmt.Errorf("column %q: %w", col, err)
+			}
+
+			return timeOut, nil
 		}
 		return Int64Values(out), nil
 	case TypeDouble:

@@ -1107,7 +1107,7 @@ Ordered so each item has what it needs from the one before:
       implementation detail.
       - [ ] **Done when:** `cat` prints text for an annotated column and does
             something deliberate (not accidental) for an unannotated one
-- [ ] Given INT64 values and the leaf's logical type, produce `time.Time` in
+- [X] Given INT64 values and the leaf's logical type, produce `time.Time` in
       UTC. The logical type distinguishes millis, micros and nanos, and says
       whether the value is already UTC-adjusted.
 - [ ] Assemble whole rows: given every leaf column of one row group, produce one
