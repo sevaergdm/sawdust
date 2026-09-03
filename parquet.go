@@ -107,6 +107,7 @@ func (f *File) ReadColumn(col string) (ColumnValues, error) {
 	columns := Columns(root)
 	colName := ""
 	maxDefLevel := int64(-1)
+	maxRepLevel := int64(0)
 	var logicalType LogicalType
 	var convertedType *ConvertedType
 	var colType PhysicalType
@@ -119,10 +120,8 @@ func (f *File) ReadColumn(col string) (ColumnValues, error) {
 			if t == nil {
 				return nil, fmt.Errorf("no column type defined in schema for %q", col)
 			}
-			if c.MaxRepetitionLevel > 0 {
-				return nil, fmt.Errorf("column %q is a repeated (list) column, which is not yet supported", col)
-			}
 			maxDefLevel = int64(c.MaxDefinitionLevel)
+			maxRepLevel = int64(c.MaxRepetitionLevel)
 			logicalType = c.Element.LogicalType
 			convertedType = c.Element.ConvertedType
 			colType = *t
@@ -154,12 +153,16 @@ func (f *File) ReadColumn(col string) (ColumnValues, error) {
 		}
 	}
 
+	var flat ColumnValues
+	var offsets []int
 	switch colType {
 	case TypeInt64:
-		out, err := collect(f, chunks, maxDefLevel, func(b []byte, _ Encoding, _ int) ([]int64, error) { return decodePlainInt64(b) })
+		out, off, err := collect(f, chunks, maxDefLevel, maxRepLevel, func(b []byte, _ Encoding, _ int) ([]int64, error) { return decodePlainInt64(b) })
 		if err != nil {
 			return nil, err
 		}
+		offsets = off
+		flat = Int64Values(out)
 		if ts, ok := logicalType.(TimestampType); ok {
 			if !ts.IsAdjustedToUTC {
 				return nil, fmt.Errorf("column %q: timestamps without UTC adjustment are not supported", col)
@@ -168,18 +171,17 @@ func (f *File) ReadColumn(col string) (ColumnValues, error) {
 			if err != nil {
 				return nil, fmt.Errorf("column %q: %w", col, err)
 			}
-
-			return timeOut, nil
+			flat = timeOut
 		}
-		return Int64Values(out), nil
 	case TypeDouble:
-		out, err := collect(f, chunks, maxDefLevel, func(b []byte, _ Encoding, _ int) ([]float64, error) { return decodePlainDouble(b) })
+		out, off, err := collect(f, chunks, maxDefLevel, maxRepLevel, func(b []byte, _ Encoding, _ int) ([]float64, error) { return decodePlainDouble(b) })
 		if err != nil {
 			return nil, err
 		}
-		return DoubleValues(out), nil
+		offsets = off
+		flat = DoubleValues(out)
 	case TypeByteArray:
-		out, err := collect(f, chunks, maxDefLevel, func(b []byte, enc Encoding, _ int) ([][]byte, error) {
+		out, off, err := collect(f, chunks, maxDefLevel, maxRepLevel, func(b []byte, enc Encoding, _ int) ([][]byte, error) {
 			switch enc {
 			case EncodingPlain:
 				return decodePlainByteArray(b)
@@ -198,25 +200,32 @@ func (f *File) ReadColumn(col string) (ColumnValues, error) {
 		} else if logicalType == nil && convertedType != nil && *convertedType == ConvertedUTF8 {
 			isText = true
 		}
+		offsets = off
 
 		if isText {
 			stringOut, err := toStrings(out)
 			if err != nil {
 				return nil, err
 			}
-			return stringOut, nil
+			flat = stringOut
+		} else {
+			flat = ByteArrayValues(out)
 		}
-
-		return ByteArrayValues(out), nil
 	case TypeBoolean:
-		out, err := collect(f, chunks, maxDefLevel, func(b []byte, _ Encoding, count int) ([]bool, error) { return decodePlainBoolean(b, count) })
+		out, off, err := collect(f, chunks, maxDefLevel, maxRepLevel, func(b []byte, _ Encoding, count int) ([]bool, error) { return decodePlainBoolean(b, count) })
 		if err != nil {
 			return nil, err
 		}
-		return BooleanValues(out), nil
+		offsets = off
+		flat = BooleanValues(out)
 	default:
 		return nil, fmt.Errorf("unhandled type %s, unable to decode", colType)
 	}
+
+	if maxRepLevel > 0 {
+		return ListValues{Elements: flat, Offsets: offsets}, nil
+	}
+	return flat, nil
 }
 
 func (f *File) ReadPages(chunk ColumnChunk) ([]Page, error) {
@@ -340,12 +349,13 @@ func OpenFile(path string) (*File, error) {
 	return &File{reader: f, closer: f, Size: size, Footer: footer, Metadata: fileMetadata}, nil
 }
 
-func collect[T any](f *File, chunks []ColumnChunk, maxDefLevel int64, decode func(b []byte, enc Encoding, count int) ([]T, error)) ([]*T, error) {
+func collect[T any](f *File, chunks []ColumnChunk, maxDefLevel, maxRepLevel int64, decode func(b []byte, enc Encoding, count int) ([]T, error)) ([]*T, []int, error) {
 	var out []*T
+	var offsets []int
 	for _, chunk := range chunks {
 		pages, err := f.ReadPages(chunk)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		codec := chunk.Metadata.Codec
 		colName := strings.Join(chunk.Metadata.PathInSchema, ".")
@@ -355,37 +365,48 @@ func collect[T any](f *File, chunks []ColumnChunk, maxDefLevel int64, decode fun
 			if page.Header.Type == DictionaryPage {
 				decompressed, err := f.decompress(page, codec)
 				if err != nil {
-					return nil, err
+					return nil, nil, err
 				}
 				dictionary, err = decode(decompressed, page.Header.DictionaryPageHeader.Encoding, int(page.Header.DictionaryPageHeader.NumValues))
 				if err != nil {
-					return nil, err
+					return nil, nil, err
 				}
 				continue
 			}
 
 			pageHeader := page.Header.DataPageHeaderV2
 			if pageHeader == nil {
-				return nil, fmt.Errorf("page error: no data page header provided for %q", colName)
+				return nil, nil, fmt.Errorf("page error: no data page header provided for %q", colName)
 			}
 
 			valueBytes, err := f.decompress(page, codec)
 			if err != nil {
-				return nil, fmt.Errorf("decompression error on %q: %w", colName, err)
+				return nil, nil, fmt.Errorf("decompression error on %q: %w", colName, err)
 			}
 
 			repLen := int(pageHeader.RepetitionLevelsByteLength)
 			defLen := int(pageHeader.DefinitionLevelsByteLength)
+			repLevelBytes := page.Data[:repLen]
 			defLevelBytes := page.Data[repLen : repLen+defLen]
-			count := int(pageHeader.NumValues)
+			repCount := int(pageHeader.NumValues)
+			defCount := int(pageHeader.NumValues)
 			storedCount := int(pageHeader.NumValues - pageHeader.NumNulls)
-			bitWidth := bits.Len(uint(maxDefLevel))
+			repBitWidth := bits.Len(uint(maxRepLevel))
+			defBitWidth := bits.Len(uint(maxDefLevel))
 
-			levels := make([]int64, count)
+			defLevels := make([]int64, defCount)
 			if maxDefLevel > 0 {
-				levels, err = decodeRLE(defLevelBytes, bitWidth, count)
+				defLevels, err = decodeRLE(defLevelBytes, defBitWidth, defCount)
 				if err != nil {
-					return nil, err
+					return nil, nil, err
+				}
+			}
+
+			repLevels := make([]int64, repCount)
+			if maxRepLevel > 0 {
+				repLevels, err = decodeRLE(repLevelBytes, repBitWidth, repCount)
+				if err != nil {
+					return nil, nil, err
 				}
 			}
 
@@ -396,18 +417,18 @@ func collect[T any](f *File, chunks []ColumnChunk, maxDefLevel int64, decode fun
 					break
 				}
 				if dictionary == nil {
-					return nil, fmt.Errorf("column %q: dictionary-encoded page with no dictionary", colName)
+					return nil, nil, fmt.Errorf("column %q: dictionary-encoded page with no dictionary", colName)
 				}
 				bitWidth := int(valueBytes[0])
 				indices, err := decodeRLE(valueBytes[1:], bitWidth, storedCount)
 				if err != nil {
-					return nil, err
+					return nil, nil, err
 				}
 
 				values := make([]T, 0, len(indices))
 				for _, i := range indices {
 					if i < 0 || int(i) >= len(dictionary) {
-						return nil, fmt.Errorf("column %q: dictionary index %d is out of range (%d entries)", colName, i, len(dictionary))
+						return nil, nil, fmt.Errorf("column %q: dictionary index %d is out of range (%d entries)", colName, i, len(dictionary))
 					}
 					values = append(values, dictionary[i])
 				}
@@ -415,16 +436,25 @@ func collect[T any](f *File, chunks []ColumnChunk, maxDefLevel int64, decode fun
 			default:
 				decodedBytes, err = decode(valueBytes, pageHeader.Encoding, storedCount)
 				if err != nil {
-					return nil, err
+					return nil, nil, err
 				}
 			}
 
-			expandedValues, err := applyDefinitionLevels(levels, decodedBytes, maxDefLevel)
+			expandedValues, chunkOffsets, err := applyLevels(repLevels, defLevels, decodedBytes, maxDefLevel, maxRepLevel, int(pageHeader.NumRows))
 			if err != nil {
-				return nil, err
+				return nil, nil, err
+			}
+
+			base := len(out)
+			if len(offsets) == 0 {
+				offsets = append(offsets, chunkOffsets...)
+			} else {
+				for _, o := range chunkOffsets[1:] {
+					offsets = append(offsets, base+o)
+				}
 			}
 			out = append(out, expandedValues...)
 		}
 	}
-	return out, nil
+	return out, offsets, nil
 }

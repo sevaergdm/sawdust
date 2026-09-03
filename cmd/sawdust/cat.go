@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/sevaergdm/sawdust"
@@ -35,19 +36,25 @@ func cmdCat(args []string) {
 		os.Exit(1)
 	}
 
+	var offsets []int
+	if lv, ok := vals.(sawdust.ListValues); ok {
+		offsets = lv.Offsets
+		vals = lv.Elements
+	}
+
 	switch v := vals.(type) {
 	case sawdust.Int64Values:
-		err = printAll(os.Stdout, v, func(x int64) string { return strconv.FormatInt(x, 10) })
+		err = printValues(os.Stdout, v, offsets, func(x int64) string { return strconv.FormatInt(x, 10) })
 	case sawdust.DoubleValues:
-		err = printAll(os.Stdout, v, func(x float64) string { return strconv.FormatFloat(x, 'g', -1, 64) })
+		err = printValues(os.Stdout, v, offsets, func(x float64) string { return strconv.FormatFloat(x, 'g', -1, 64) })
 	case sawdust.StringValues:
-		err = printAll(os.Stdout, v, func(x string) string { return x })
+		err = printValues(os.Stdout, v, offsets, func(x string) string { return x })
 	case sawdust.ByteArrayValues:
-		err = printAll(os.Stdout, v, func(x []byte) string { return fmt.Sprintf("%x", x) })
+		err = printValues(os.Stdout, v, offsets, func(x []byte) string { return fmt.Sprintf("%x", x) })
 	case sawdust.BooleanValues:
-		err = printAll(os.Stdout, v, func(x bool) string { return strconv.FormatBool(x) })
+		err = printValues(os.Stdout, v, offsets, func(x bool) string { return strconv.FormatBool(x) })
 	case sawdust.TimestampValues:
-		err = printAll(os.Stdout, v, func(x time.Time) string { return x.Format(time.RFC3339) })
+		err = printValues(os.Stdout, v, offsets, func(x time.Time) string { return x.Format(time.RFC3339) })
 	default:
 		err = fmt.Errorf("unsupported type %s", v)
 	}
@@ -57,17 +64,33 @@ func cmdCat(args []string) {
 
 }
 
-func printAll[T any](w io.Writer, vals []*T, format func(T) string) error {
-	for _, p := range vals {
-		if p == nil {
-			_, err := fmt.Fprintln(w, "")
-			if err != nil {
+func printValues[T any](w io.Writer, vals []*T, offsets []int, format func(T) string) error {
+	if offsets == nil {
+		for _, p := range vals {
+			if p == nil {
+				_, err := fmt.Fprintln(w, "NULL")
+				if err != nil {
+					return err
+				}
+				continue
+			}
+			if _, err := fmt.Fprintln(w, format(*p)); err != nil {
 				return err
 			}
-			continue
 		}
+		return nil
+	}
 
-		if _, err := fmt.Fprintln(w, format(*p)); err != nil {
+	for i := 0; i+1 < len(offsets); i++ {
+		parts := make([]string, 0, offsets[i+1]-offsets[i])
+		for _, p := range vals[offsets[i]:offsets[i+1]] {
+			if p == nil {
+				parts = append(parts, "NULL")
+			} else {
+				parts = append(parts, format(*p))
+			}
+		}
+		if _, err := fmt.Fprintf(w, "[%s]\n", strings.Join(parts, ", ")); err != nil {
 			return err
 		}
 	}

@@ -35,6 +35,13 @@ type StringValues []*string
 
 func (StringValues) isColumnValues() {}
 
+type ListValues struct {
+	Elements ColumnValues // the flat values, as an existing variant
+	Offsets  []int        // row i spans Elements[Offsets[i]:Offsets[i+1]]
+}
+
+func (ListValues) isColumnValues() {}
+
 func decodePlainInt64(b []byte) ([]int64, error) {
 	if len(b)%8 != 0 {
 		return nil, fmt.Errorf("expected total bytes to be a multiple of 8, but got %d", len(b))
@@ -158,32 +165,53 @@ func decodeRLE(b []byte, bitWidth, count int) ([]int64, error) {
 	return out[:count], nil
 }
 
-// applyDefinitionLevels expands values into one slot per row. The result has one entry per level:
+// applyLevels expands values into one slot per row. The result has one entry per level:
 // a pointer to the next unused value where the level equals maxDefLevel, and nil where it does not,
 // since a null consumes no value.
 //
 // The returned pointers alias values rather than copying it. Mutating values after the call changes
 // the result, and retaining any non-nil pointer keeps the whole values backing array alive.
-func applyDefinitionLevels[T any](levels []int64, values []T, maxDefLevel int64) ([]*T, error) {
-	var out []*T
+func applyLevels[T any](repLevels, defLevels []int64, values []T, maxDefLevel, maxRepLevel int64, numRows int) ([]*T, []int, error) {
+	var elements []*T
+	offsets := make([]int, 0, numRows+1)
 	cursor := 0
 
-	for _, level := range levels {
-		if level == maxDefLevel {
-			if cursor >= len(values) {
-				return nil, fmt.Errorf("total number of levels (%d) exceeds available values (%d)", len(levels), len(values))
-			}
-			out = append(out, &values[cursor])
-			cursor++
-		} else {
-			out = append(out, nil)
+	if maxRepLevel > 0 && len(repLevels) != len(defLevels) {
+		return nil, nil, fmt.Errorf("repetition levels (%d) and definition levels (%d) should match", len(repLevels), len(defLevels))
+	}
+
+	if maxRepLevel > 1 {
+		return nil, nil, fmt.Errorf("nesting deeper than one level is not supported (maxRepLevel %d)", maxRepLevel)
+	}
+
+	if maxRepLevel > 0 && maxDefLevel > maxRepLevel {
+		return nil, nil, fmt.Errorf("repeated column with nullable elements is not supported (maxDefLevel %d, maxRepLevel %d)", maxDefLevel, maxRepLevel)
+	}
+
+	for i := range defLevels {
+		if maxRepLevel == 0 || repLevels[i] == 0 {
+			offsets = append(offsets, len(elements))
 		}
+		if defLevels[i] == maxDefLevel {
+			if cursor >= len(values) {
+				return nil, nil, fmt.Errorf("levels need at least %d values, but only %d were stored", cursor+1, len(values))
+			}
+			elements = append(elements, &values[cursor])
+			cursor++
+		} else if maxRepLevel == 0 {
+			elements = append(elements, nil)
+		}
+	}
+	offsets = append(offsets, len(elements))
+
+	if len(offsets)-1 != numRows {
+		return nil, nil, fmt.Errorf("levels produced %d rows, header says %d", len(offsets)-1, numRows)
 	}
 
 	if cursor != len(values) {
-		return nil, fmt.Errorf("levels said %d values were present, but only %d were stored", len(values), cursor)
+		return nil, nil, fmt.Errorf("levels said %d values were present, but only %d were stored", len(values), cursor)
 	}
-	return out, nil
+	return elements, offsets, nil
 }
 
 func decodeDeltaLengthByteArray(b []byte) ([][]byte, error) {

@@ -1122,25 +1122,67 @@ Ordered so each item has what it needs from the one before:
 - [X] Given INT64 values and the leaf's logical type, produce `time.Time` in
       UTC. The logical type distinguishes millis, micros and nanos, and says
       whether the value is already UTC-adjusted.
-- [ ] Repetition levels — **missing from this list until now**, though
-      `nested.parquet` has had a repeated column since stage 0. `tags` is a
-      `[]string`, so a row holds zero, one or two values: 100 rows produce 133
-      values. Definition levels alone cannot say which row each belongs to, so
-      reading it returns a flat sequence with no grouping.
-      A repetition level of 0 means "this value starts a new row"; 1 means "this
-      value continues the list already being built". The stream uses the same
-      RLE/bit-packing hybrid as definition levels, at a width derived from
-      `MaxRepetitionLevel` — so `decodeRLE` already handles the bytes. What is
-      missing is reading and using them.
-      `ReadColumn` errors on `MaxRepetitionLevel > 0` today, which is the right
-      refusal but not a capability. Row assembly depends on this: a zip across
-      columns needs every column to yield exactly one entry per row, and `tags`
-      yields 133 for 100 rows.
-      - [ ] A variant that holds a list per row, or an explicit decision that
-            lists stay out of scope and the error is the final answer. This is a
-            design choice, not a lookup.
-      - [ ] **Done when:** `tags` from `nested.parquet` groups as
-            `[tag-1-0]`, `[tag-2-0, tag-2-1]`, `[]`, matching DuckDB
+- [ ] Repetition levels, depth 1 — **missing from this list until now**, though
+      `nested.parquet` has had a repeated column since stage 0.
+
+      The problem: `tags` is a `[]string`, so a row holds zero, one or two
+      values. 100 rows produce 133 value slots, of which 100 hold values and 33
+      mark rows whose list is empty. Definition levels alone cannot say which
+      row a value belongs to, so reading it today returns a flat sequence with
+      no grouping — 133 values that cannot be assigned to rows.
+
+      Two streams, answering different questions, needed together. `def` says
+      whether a slot holds a value. `rep` says whether a slot starts a new row
+      or continues the previous one. Measured on `tags`:
+
+      ```
+      slot  rep  def   meaning
+         0    0    1   new row, first value: tag-1-0
+         1    0    1   new row, first value: tag-2-0
+         2    1    1   same row, next value: tag-2-1
+         3    0    0   new row, EMPTY list
+      ```
+
+      Slots 1 and 2 both have `def=1`, so definition levels alone treat them
+      identically. Only `rep` separates "row 2's first tag" from "row 2's
+      second tag". And slot 3 (`rep=0, def=0`) is an empty list, not a null —
+      `applyDefinitionLevels` would emit a nil there, which is a different fact.
+
+      Both streams use the same RLE/bit-packing hybrid, at widths derived from
+      `MaxRepetitionLevel` and `MaxDefinitionLevel`, so `decodeRLE` already
+      handles the bytes. What is missing is reading and using the rep stream.
+      Note `RepetitionLevelsByteLength` comes **first** in `Page.Data`, before
+      the definition levels.
+
+      - [X] One variant, not one per element type:
+            `ListValues{Elements ColumnValues; Offsets []int}` — row `i` spans
+            `Elements[Offsets[i]:Offsets[i+1]]`, so `len(Offsets)` is
+            `numRows + 1` and an empty list is `Offsets[i] == Offsets[i+1]`.
+            This is how Arrow represents lists. Because `Elements` is itself a
+            `ColumnValues`, the type already expresses arbitrary nesting depth
+            without change — only the assembly function is depth-limited.
+      - [X] One function, not two. Return the flat values **and** the offsets:
+            `applyLevels[T](repLevels, defLevels []int64, values []T,
+            maxRepLevel, maxDefLevel int64) ([]*T, []int, error)`.
+            For a non-repeated column every rep level is 0, so offsets come out
+            as `[0,1,2,…n]` and `ReadColumn` ignores them — which means this
+            *replaces* `applyDefinitionLevels` rather than duplicating it.
+            `repLevels` may be nil when `maxRepLevel` is 0.
+      - [X] Guard `cursor == len(values)` and `len(offsets)-1 == numRows` at the
+            end. The second is a new cross-check: `numRows` is a separate header
+            field from `numValues`, and for every column read so far they have
+            been equal, so it has never had anything to catch.
+      - [X] `ReadColumn` branches on `MaxRepetitionLevel`: 0 wraps the flat
+            values as today, 1 wraps both in `ListValues`, above 1 errors.
+      - [X] `cat` gains a `ListValues` case. Match DuckDB's rendering —
+            `[tag-2-0, tag-2-1]` — so the diff works without post-processing.
+      - [X] **Done when:** `tags` from `nested.parquet` groups as
+            `[tag-1-0]`, `[tag-2-0, tag-2-1]`, `[]`, `[tag-4-0]`, matching
+            DuckDB row for row.
+
+      Deferred to Stretch, deliberately rather than arbitrarily: nesting deeper
+      than one level. See the Stretch entry for what it costs.
+
 - [ ] Assemble whole rows: given every leaf column of one row group, produce one
       record per row. This is a zip across columns rather than a decode, and it
       is the first code that needs all columns at once instead of one at a time.
@@ -1148,6 +1190,20 @@ Ordered so each item has what it needs from the one before:
       newline-delimited JSON.
       - [ ] **Done when:** output diffs clean against a DuckDB CSV export of the
             same file
+
+**Null renders as the literal `NULL`, in flat columns and inside lists alike.**
+Chosen over a blank line because blank is ambiguous: an empty string and an
+empty byte array are legitimate values that render identically to a null, and
+`raw.parquet` contains both. `NULL` collides only with a string whose value is
+literally "NULL", which is the rarer case. No unquoted representation is fully
+unambiguous — that is what CSV quoting exists for.
+
+Comparisons against DuckDB must configure the oracle to match rather than the
+other way round:
+`COPY (SELECT …) TO 'f.csv' (HEADER false, NULLSTR 'NULL')`. Verified to produce
+byte-identical output for `even_row_number`. A plain `::varchar` cast will not
+match — it emits blank for NULL, DuckDB's own timestamp format rather than
+RFC3339, and `\x`-escaped bytes rather than hex.
 
 Deferred, not skipped: V1 data pages frame their levels differently — a 4-byte
 little-endian length precedes each RLE stream, where V2 puts the lengths in the
@@ -1258,6 +1314,33 @@ breaking change you had to make immediately afterwards.
 ---
 
 ## Stretch
+
+- [ ] **Repetition levels, arbitrary depth.** parquet-go writes depth 2 with a
+      `list` struct tag — `[][]string` produces the leaf
+      `nested.list.element.list.element` with `maxDef 2, maxRep 2` — so this is
+      reachable, not theoretical. Two things are needed beyond depth 1.
+
+      One offsets array per repetition level instead of a single one, driven by
+      the rule that rep level `r` means "start a new element at nesting depth
+      `r`, keep everything shallower". That part is mechanical.
+
+      The harder part is that definition levels must say *where* the absence is.
+      At depth 2, `def < maxDef` could mean the outer list is empty, the inner
+      list is empty, or the element is null — three different results
+      distinguished by which value `def` takes. Interpreting that needs, per
+      leaf, the definition level at which each ancestor becomes defined, which
+      means extending `Column` with per-ancestor metadata rather than just the
+      two maxima. It is derivable from the walk `collectColumns` already does.
+
+      This is Dremel record assembly, and it is the last genuinely hard
+      algorithm in the format — a stack machine rather than a loop. Rough scale:
+      the depth-1 version is around 25 lines; this is 60–80 plus the schema
+      metadata.
+
+      Nothing else depends on it. `ListValues` already nests, so the data model
+      does not change — only the assembly function.
+      - [ ] A `-kind` fixture using a `[][]string` field with the `list` tag
+      - [ ] **Done when:** a depth-2 column round-trips against DuckDB
 
 Pick by curiosity, not order.
 
