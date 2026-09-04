@@ -1183,13 +1183,67 @@ Ordered so each item has what it needs from the one before:
       Deferred to Stretch, deliberately rather than arbitrarily: nesting deeper
       than one level. See the Stretch entry for what it costs.
 
-- [ ] Assemble whole rows: given every leaf column of one row group, produce one
-      record per row. This is a zip across columns rather than a decode, and it
-      is the first code that needs all columns at once instead of one at a time.
-- [ ] `sawdust cat <file>` with no column argument emits all rows as
-      newline-delimited JSON.
-      - [ ] **Done when:** output diffs clean against a DuckDB CSV export of the
-            same file
+- [ ] `sawdust cat <file>` with no column argument emits one JSON object per
+      row. That format is called NDJSON (newline-delimited JSON, also JSON
+      Lines): one object per line, no wrapping array, no commas between lines,
+      so each line parses on its own.
+
+      ```
+      {"id":1,"inner.a":10,"opt_in.a":null,"tags":["tag-1-0"]}
+      {"id":2,"inner.a":20,"opt_in.a":200,"tags":["tag-2-0","tag-2-1"]}
+      {"id":3,"inner.a":30,"opt_in.a":null,"tags":[]}
+      ```
+
+      **This lives in `cmd/sawdust`, not the library.** It boxes every value
+      into `any`, which is what was rejected for `ReadColumn`'s return type —
+      acceptable only because JSON stringifies everything anyway. A typed row
+      API would be a real library feature and a stage 7 question.
+
+      **Two facts about the shapes you already have.** A flat column is already
+      row-aligned: `Int64Values` is `[]*int64` with one entry per row, so index
+      `i` is row `i`. A `ListValues` is not — `tags` has 100 elements and 100
+      rows, but row 1 owns elements 1 and 2, and that mapping lives in
+      `Offsets`. That is the cost of having chosen one list variant over one per
+      element type, and it surfaces here.
+
+      So the work splits in two, and keeping them separate is what makes it
+      manageable:
+
+      - [X] **Per column: produce one `[]any` with one entry per row.** Two jobs
+            in one pass. *Type erasure* — `[]*int64` and `[]*string` both become
+            `[]any` — needed for every column so they can share a map and be
+            indexed without a type switch per cell. *Applying offsets* — only
+            for `ListValues`, where each row's slice of elements collapses into
+            a single `[]any` entry. Handle `ListValues` before the type switch,
+            recursing on `Elements` first to get one entry per element, then
+            cutting that with the offsets. Name it for what it does to a single
+            column — `perRow` or `alignToRows`, not `toRowValues`, which implies
+            it makes records.
+      - [X] **Then zip: for row `i`, read index `i` from every column.** Four
+            lines, because the step above removed all the per-column indexing
+            rules. Build a `map[string]any` and encode it; `encoding/json` sorts
+            map keys, so field order is deterministic for free.
+      - [X] Assert every column's slice has length `NumRows` before zipping. A
+            miscounted column would otherwise pair wrong values silently — the
+            same failure the `applyLevels` row-count guard prevents one layer
+            down.
+      - [X] **`[]byte` marshals to base64, not hex.** `{"raw":"ABsB/w=="}`
+            rather than `{"raw":"001b01ff"}`, which contradicts what
+            `cat <file> raw` prints. Convert with `hex.EncodeToString` during
+            the per-column pass. `time.Time` needs nothing — it marshals to
+            RFC3339 already.
+      - [X] Nulls are JSON `null` here, not the string `"NULL"`. JSON has a real
+            null and it cannot be confused with a string, so the two commands
+            can legitimately differ — unlike the flat-versus-list case, where
+            both were plain text.
+      - [X] Repeating the six-line nil-preserving loop in every switch arm is
+            the obvious first draft. One small generic helper taking a
+            conversion function collapses each arm to a line. It is
+            deduplication, not a new idea, and the same shape as `cat`'s
+            existing value printer.
+      - [X] **Done when:** NDJSON for `nested.parquet` matches a DuckDB export
+            row for row — six leaves per record, `opt_in.*` null on odd rows,
+            `tags` an array with row 3 empty.
 
 **Null renders as the literal `NULL`, in flat columns and inside lists alike.**
 Chosen over a blank line because blank is ambiguous: an empty string and an
@@ -1212,32 +1266,32 @@ against. Same deferral as stage 4.
 
 ### Traps to hit deliberately
 
-- [ ] Zip values to rows positionally, ignoring definition levels. On
+- [X] Zip values to rows positionally, ignoring definition levels. On
       `optionals_all_null.parquet` and a mixed-null column, watch values land on
       the wrong rows — every row after the first null is shifted.
-- [ ] Assume the dictionary applies to the whole column chunk and that every
+- [X] Assume the dictionary applies to the whole column chunk and that every
       data page uses it. Check `encoding_stats`: a chunk can fall back to PLAIN
       partway through when the dictionary grows too large.
-- [ ] Read the dictionary index bit width from the schema instead of from the
+- [X] Read the dictionary index bit width from the schema instead of from the
       page's first byte.
 
 ### Verify
 
-- [ ] `COPY (SELECT * FROM 'f.parquet') TO 'oracle.csv';` then have your reader
+- [X] `COPY (SELECT * FROM 'f.parquet') TO 'oracle.csv';` then have your reader
       emit the same rows in the same order and diff. Row-for-row equality is the
       Done-when; anything less hides a shift bug.
-- [ ] `optionals_all_null.parquet` and `optionals_never_null.parquet` must both
+- [X] `optionals_all_null.parquet` and `optionals_never_null.parquet` must both
       round-trip, and `count(col)` from your output must equal DuckDB's.
-- [ ] Assert the mirror case on a fixture: a REQUIRED column stores no
+- [X] Assert the mirror case on a fixture: a REQUIRED column stores no
       definition levels at all. `row_number` in any fixture already shows
       `definition_levels_byte_length: 0` — make it an assertion rather than an
       observation.
-- [ ] For the low-cardinality column, assert your decoded distinct set equals
+- [X] For the low-cardinality column, assert your decoded distinct set equals
       `SELECT DISTINCT col FROM 'f.parquet';` and that the dictionary-encoded
       and plain-encoded fixtures produce identical values.
-- [ ] Timestamps: `SELECT epoch_us(ts) FROM ...` compared against your
+- [X] Timestamps: `SELECT epoch_us(ts) FROM ...` compared against your
       `UnixMicro()`. Exact equality — no rounding tolerance.
-- [ ] Then the real test: a real `journal` file from the agent, with its many
+- [X] Then the real test: a real `journal` file from the agent, with its many
       optionals and its JSON `fields` column, row-for-row against a DuckDB
       export.
 
