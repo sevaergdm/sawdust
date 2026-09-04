@@ -32,7 +32,7 @@ func cmdSchema(args []string) {
 		os.Exit(1)
 	}
 
-	byPath := map[string]sawdust.Column{}
+	byPath := map[string]sawdust.SchemaColumn{}
 	for _, c := range sawdust.Columns(root) {
 		byPath[strings.Join(c.Path, ".")] = c
 	}
@@ -43,7 +43,7 @@ func cmdSchema(args []string) {
 	}
 }
 
-func printNode(n sawdust.SchemaNode, depth int, path []string, byPath map[string]sawdust.Column) {
+func printNode(n sawdust.SchemaNode, depth int, path []string, byPath map[string]sawdust.SchemaColumn) {
 	path = append(path, n.Element.Name)
 	indent := strings.Repeat("  ", depth)
 

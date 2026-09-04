@@ -53,7 +53,7 @@ func TestColumns(t *testing.T) {
 
 	gotNestedColumns := Columns(nestedRoot)
 
-	wantNestedColumns := []Column{
+	wantNestedColumns := []SchemaColumn{
 		{Path: []string{"id"}, Element: nestedSchema[1], MaxDefinitionLevel: 0, MaxRepetitionLevel: 0},
 		{Path: []string{"inner", "a"}, Element: nestedSchema[3], MaxDefinitionLevel: 0, MaxRepetitionLevel: 0},
 		{Path: []string{"inner", "b"}, Element: nestedSchema[4], MaxDefinitionLevel: 0, MaxRepetitionLevel: 0},
@@ -72,7 +72,7 @@ func TestColumns(t *testing.T) {
 	}
 
 	gotBasicColumns := Columns(basicRoot)
-	wantBasicColumns := []Column{
+	wantBasicColumns := []SchemaColumn{
 		{Path: []string{"row_number"}, Element: basicSchema[1], MaxDefinitionLevel: 0, MaxRepetitionLevel: 0},
 		{Path: []string{"even_row_number"}, Element: basicSchema[2], MaxDefinitionLevel: 1, MaxRepetitionLevel: 0},
 		{Path: []string{"rand_id"}, Element: basicSchema[3], MaxDefinitionLevel: 0, MaxRepetitionLevel: 0},

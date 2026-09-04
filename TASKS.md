@@ -1315,14 +1315,155 @@ CSV export, on every fixture and on at least one real file per source.
 
 ## Stage 6 — Pruning, and the first stage you plan yourself
 
-**You write this stage's task breakdown.** Here is the goal and the Done-when;
-the decomposition into checkboxes, hints and traps is yours. Bring the plan for
-review before you start building, the same way you would bring a design sketch.
+**This stage's breakdown was worked out in conversation on 2026-09-04**, from
+the goal and Done-when below. The four decisions are answered further down with
+their reasoning; the checkboxes derive from those answers. Original intent was
+that you write it cold — that turned out to be a missing rung, since five
+fully-specified stages had been read and none written.
 
 **Goal:** use the metadata from Stage 3 to avoid work in Stage 4/5. Given a
 simple predicate on one column (`ts > X`, `unit = 'y'`), skip row groups whose
 statistics prove they cannot match, and report how many bytes and pages you
 avoided reading.
+
+**This is an experiment, not a feature.** You would reach for DuckDB to query a
+file, so sawdust does not need a query API. What it needs is to demonstrate
+pruning and measure it. That framing is why the predicate stays a struct and
+why the API question is deferred to Stage 7 — nothing here is load-bearing for
+a caller.
+
+### Facts to have in hand, none of them tasks
+
+**Pruning never assumes or validates ordering.** It reads min and max from the
+footer — two values per row group — and compares them to the predicate. No loop
+over data. Sortedness is not a precondition; it is what makes pruning
+*effective*. Clustered data gives narrow non-overlapping ranges, so the
+comparison eliminates a lot. Scattered data gives wide overlapping ranges, so it
+eliminates nothing. Either way the check costs two comparisons.
+
+**The rule, per operator.** Skip the group when:
+
+```
+col > X    →  max <= X
+col < X    →  min >= X
+col = X    →  X < min  or  X > max
+```
+
+Measured on `many_rows.parquet` with `row_number > 250`: groups have max 100,
+200, 300, so two of three are skipped and 1751 of 2627 bytes for that column are
+never read.
+
+**Strings work identically** — same rule, `bytes.Compare` instead of `<`.
+Measured on the same file:
+
+```
+category = "buzz"      0% avoided   value inside every group's [bar .. foo]
+category = "zzz"     100% avoided   value above every group's max
+rand_id  = "id-0250"  67% avoided   ranges disjoint, value in one
+```
+
+What defeats pruning is overlapping ranges, not the column's type. A
+low-cardinality randomly-distributed column has every group spanning the full
+range, so any value that *actually exists* is inside every range.
+
+Byte comparison is not collation — `'Z'` is 90 and `'a'` is 97, so uppercase
+sorts first and nothing about locale or case-insensitivity applies. A predicate
+a database answers case-insensitively prunes differently here.
+
+**Four physical types, not six.** `StringType` and `TimestampType` are logical
+refinements. Statistics store min/max as the *physical* type's bytes, so `ts`'s
+max is 8 little-endian bytes of microseconds and decodes exactly like
+`row_number`. Across all thirteen fixtures the physical types are `INT64`,
+`DOUBLE`, `BOOLEAN`, `BYTE_ARRAY`.
+
+**Pruning may only skip when it can prove no row matches.** Absence of evidence
+is not evidence of absence. That makes "read it" the default and every skip a
+positive claim.
+
+**Filtering and pruning are different things.** Pruning skips *reading* groups
+that cannot match — an optimization; omit it entirely and the answer is still
+correct, just slower. Filtering drops non-matching rows from what you did read —
+correctness; without it the answer is wrong however good the pruning. A
+surviving group holds a mix: `row_number > 250` keeps group 2, which contains
+rows 201–300 of which 50 match.
+
+### Build — ordered so each item has what it needs
+
+- [ ] **The predicate type.** A struct: one column, one operator, one value.
+      `{Column string; Op Op; Value any}` with `Gt`, `Lt`, `Eq`. Cannot express
+      `a > 1 AND b = 'x'`, which is correct for an experiment and would be
+      gold-plating for a caller that does not exist.
+- [ ] **Coerce the value once, up front,** into the column's physical
+      representation — before touching any row group. `ReadColumn` already
+      resolves the column and captures `logicalType`, so that is where it goes.
+      A `time.Time` becomes micros/millis/nanos per the `TimeUnit`; a `string`
+      becomes `[]byte`; an `int64` and a `bool` stay. Then every per-group check
+      is a pure comparison with no type logic in it.
+      - [ ] A type mismatch — a string for an INT64 column — errors here, before
+            any I/O, with a message naming both types
+      - [ ] **Done when:** a `time.Time` predicate on `ts` and an `int64`
+            predicate on `row_number` both reach the comparison as int64
+- [ ] **Four comparators**, one per physical type, each answering "can this
+      group be skipped". `BYTE_ARRAY` is the easiest — min/max are already raw
+      bytes, so `bytes.Compare` against the coerced value with no decoding.
+      `INT64` and `DOUBLE` decode 8 bytes first; `BOOLEAN` is a single byte.
+      The set of types pruning supports is exactly the set `ReadColumn`
+      supports, because both need the same per-type decode — so an unsupported
+      type fails in `ReadColumn` before pruning is reached.
+- [ ] **Absent statistics mean read the group.** `Statistics` is a pointer and
+      `MinValue`/`MaxValue` can each be nil. The nil check must produce "read
+      it" *directly* — not fall through to a comparison on a zero default, which
+      would make a nil max compare as 0, satisfy `max <= X`, and skip the group
+      *because* its statistics were missing.
+      - [ ] **Done when:** a column with no statistics returns every row
+- [ ] **The row filter — build this first and get it correct alone.** Walk the
+      decoded values, keep the ones satisfying the predicate, preserve file
+      order. One pass, works for every operator. Not a sort: sorting changes the
+      order DuckDB returns, only works for one-sided range predicates, and
+      visits every element more than once to do less.
+      - [ ] **Done when:** filtered rows are identical to
+            `SELECT … WHERE …` from DuckDB, with no pruning enabled at all —
+            this is the known-good baseline everything after compares against
+- [ ] **Then the pruning**, skipping row groups the comparators reject.
+      - [ ] **Done when:** the returned rows are *still* identical to DuckDB,
+            and `BytesRead()` is lower than the unpruned path. If correctness
+            breaks here you have a known-good path to diff against, which is why
+            the filter came first.
+- [ ] **The measurement.** `countingReaderAt` installed by `OpenFile`,
+      `BytesRead()` on `File`. See the answered decision below for why the
+      wrapper rather than a field incremented per call site.
+      - [ ] **Done when:** the same query run with and without the predicate
+            reports two different byte counts, and the difference matches the
+            skipped groups' `TotalCompressedSize`
+- [ ] **The finding.** Run it against a real day of journal data and write down
+      what happened. The expected answer is that pruning saves nothing, because
+      one flush is one file with one row group and rows arrive in `ts` order
+      only by accident. That is the result, not a failure — and it is the
+      measured justification for machine-observability §5.4's requirement that
+      compaction sort by `ts` and set an explicit row group size.
+      - [ ] **Done when:** the README states the measured saving on a real file
+            and explains why it is what it is
+
+### Traps to hit deliberately
+
+- [ ] Prune with a nil `MaxValue` defaulted to zero and watch a group vanish
+      because its statistics were absent. This is the one that returns wrong
+      answers silently.
+- [ ] Prune without filtering and compare row counts against DuckDB — 100 rows
+      where 50 were asked for.
+- [ ] Compute the saving from `TotalCompressedSize` of the surviving groups
+      instead of from `BytesRead()`, then break the pruning so it reads a group
+      it decided to skip. The calculated number will not notice.
+- [ ] Predicate on `category` with a value that exists in the data and watch 0%
+      pruned. Then use `'zzz'` and watch 100%. Same column, same code.
+
+### Verify
+
+- [ ] Row-for-row against DuckDB for at least one predicate per physical type
+- [ ] `BytesRead()` with no predicate equals the whole-file read path
+- [ ] A predicate matching nothing returns no rows and reads only the footer
+- [ ] A predicate matching everything returns every row and reads everything —
+      pruning must not skip a group it cannot rule out
 
 **Done when:** for a real query against a real day of data, `sawdust` reports a
 measurable reduction in bytes read versus the no-predicate path, the returned
@@ -1336,8 +1477,93 @@ Things worth deciding in the plan (not instructions — decisions):
   composes? This is an API decision that Stage 7 will inherit.
 - Do you go further than row groups into the optional ColumnIndex/OffsetIndex
   structures for page-level pruning, or stop at row groups and say why?
+
+  **Answered 2026-09-04: stop at row groups, and it is a dependency rather than
+  a closed decision.** The structures do exist — parquet-go writes both for
+  every chunk (`ColumnIndexOffset` and `OffsetIndexOffset`, fields 5 and 7 of
+  `ColumnChunk`, which `readColumnChunk` currently skips). So the question is
+  worth, not availability.
+
+  Reasons to stop for now: page-level pruning is the *same mechanism* at finer
+  granularity — compare a predicate against min/max, skip what cannot match —
+  so it teaches nothing row-group pruning does not. It costs two new Thrift
+  structs with the same required-field machinery as the other six. And it is
+  purely additive later; nothing about row-group pruning changes to add it.
+
+  **What would change the answer, and how to know.** Page statistics only
+  subdivide anything when a chunk holds several pages. Every file measured so
+  far is single-page per chunk — including the real 41-row `journal_test.parquet`
+  — but that is because the files are small, not because Parquet looks like
+  that. The arithmetic that decides it:
+
+  ```
+  parquet-go DefaultPageBufferSize = 256 KB
+  journal_test.parquet, bytes per row:  fields 107, cursor 36, message 27, boot_id 6
+  → fields stays single-page until a row group holds ~2,450 rows
+  → cursor  until ~7,300;  boot_id until ~44,000
+  ```
+
+  So this depends on a decision not yet made in machine-observability: §5.4's
+  compaction sets an explicit row group size. At 100,000 rows per group,
+  `fields` gets roughly 40 pages per chunk and page-level pruning becomes
+  genuinely useful. At 1,000 rows per group nothing is ever multi-page and it
+  never helps.
+
+  **Revisit trigger:** after compaction lands, measure pages per chunk on a
+  compacted day. `ReadPages` already returns the page count, but `stat` reports
+  chunks rather than pages — surfacing that is a small addition and the
+  measurement that settles this. `multi_page.parquet` is the fixture to develop
+  against, since it is the only one with multi-page chunks.
+
+  Do NOT decide this from the fixtures. They are single-page because they hold
+  100–300 rows.
 - How do you *prove* the saving — count bytes read at the file-read boundary,
   or count pages decoded? Which number would convince a skeptic?
+
+  **Answered 2026-09-04: bytes measured at the reader, via an always-on
+  internal wrapper.**
+
+  Bytes rather than pages, because bytes are the actual I/O and the thing that
+  costs money on object storage. Page counts are a proxy.
+
+  **Measured rather than calculated.** Summing `TotalCompressedSize` over the
+  surviving row groups reports what you *intended* to read. It is derived from
+  the same metadata that drove the pruning decision, so it cannot catch a bug
+  in that decision — if you decide to skip a group but a code path reads it
+  anyway, the calculated number still says you skipped it. Only a count taken
+  at the reader disagrees. Same circularity as taking a test's expected value
+  from the code under test.
+
+  **The design:** `OpenFile` installs a `countingReaderAt` around the
+  `*os.File` and `File` exposes `BytesRead() int64`. The wrapper satisfies
+  `io.ReaderAt`, holds the real reader, and adds the returned byte count on the
+  way through:
+
+  ```go
+  func (c *countingReaderAt) ReadAt(p []byte, off int64) (int, error) {
+      n, err := c.r.ReadAt(p, off)
+      c.n += int64(n)
+      return n, err
+  }
+  ```
+
+  Single entry point, signature unchanged, API grows by one method. Cost is one
+  `int64` add per `ReadAt`, which fires once per chunk plus three times for the
+  footer.
+
+  **Why the wrapper rather than a `bytesRead` field incremented at each call
+  site.** Externally identical; internally the increment lives in one place
+  instead of four, so a read added later is counted automatically. That is not
+  hypothetical — the deferred page-index work adds two new reads per chunk, and
+  under the per-call-site version whoever writes it has to remember two more
+  increments or the measurement silently understates in the direction that
+  flatters the pruning.
+
+  **What this closes off:** an always-on internal wrapper solves counting, not
+  wrapping in general. Injecting retry logic, read logging, or simulated I/O
+  failures would still want an exported `NewFile(r io.ReaderAt, size int64)`.
+  Not needed now; that constructor would also let tests stop reaching into the
+  unexported `reader` field, which is the thing likely to pull it in later.
 
 ---
 

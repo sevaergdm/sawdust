@@ -6,11 +6,6 @@ import (
 	"github.com/sevaergdm/sawdust/internal/thrift"
 )
 
-type requiredField struct {
-	id   int64
-	name string
-}
-
 type RowGroup struct {
 	Columns             []ColumnChunk
 	TotalByteSize       int64
@@ -362,13 +357,4 @@ func readStatistics(d *thrift.Decoder) (Statistics, error) {
 		lastFieldID = fieldID
 	}
 	return stats, nil
-}
-
-func checkRequired(seen map[int64]bool, fields []requiredField) error {
-	for _, f := range fields {
-		if !seen[f.id] {
-			return fmt.Errorf("missing required field %d (%s)", f.id, f.name)
-		}
-	}
-	return nil
 }
