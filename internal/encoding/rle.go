@@ -1,4 +1,4 @@
-package sawdust
+package encoding
 
 import (
 	"fmt"
@@ -6,10 +6,10 @@ import (
 	"github.com/sevaergdm/sawdust/internal/thrift"
 )
 
-// decodeRLE decodes the RLE/bit-packing hybrid (Parquet encoding 3) used for
+// DecodeRLE decodes the RLE/bit-packing hybrid (Parquet encoding 3) used for
 // both definition levels and dictionary indices. bitWidth is derived from the
 // schema for levels, and read from the data for dictionary indices.
-func decodeRLE(b []byte, bitWidth, count int) ([]int64, error) {
+func DecodeRLE(b []byte, bitWidth, count int) ([]int64, error) {
 	pos := 0
 	out := make([]int64, 0, count)
 

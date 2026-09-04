@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"math/bits"
 	"strings"
+
+	"github.com/sevaergdm/sawdust/internal/encoding"
 )
 
 func (f *File) ReadColumn(col string) (ColumnValues, error) {
@@ -65,7 +67,7 @@ func (f *File) ReadColumn(col string) (ColumnValues, error) {
 	var offsets []int
 	switch colType {
 	case TypeInt64:
-		out, off, err := collect(f, chunks, maxDefLevel, maxRepLevel, func(b []byte, _ Encoding, _ int) ([]int64, error) { return decodePlainInt64(b) })
+		out, off, err := collect(f, chunks, maxDefLevel, maxRepLevel, func(b []byte, _ Encoding, _ int) ([]int64, error) { return encoding.DecodePlainInt64(b) })
 		if err != nil {
 			return nil, err
 		}
@@ -82,7 +84,7 @@ func (f *File) ReadColumn(col string) (ColumnValues, error) {
 			flat = timeOut
 		}
 	case TypeDouble:
-		out, off, err := collect(f, chunks, maxDefLevel, maxRepLevel, func(b []byte, _ Encoding, _ int) ([]float64, error) { return decodePlainDouble(b) })
+		out, off, err := collect(f, chunks, maxDefLevel, maxRepLevel, func(b []byte, _ Encoding, _ int) ([]float64, error) { return encoding.DecodePlainDouble(b) })
 		if err != nil {
 			return nil, err
 		}
@@ -92,9 +94,9 @@ func (f *File) ReadColumn(col string) (ColumnValues, error) {
 		out, off, err := collect(f, chunks, maxDefLevel, maxRepLevel, func(b []byte, enc Encoding, _ int) ([][]byte, error) {
 			switch enc {
 			case EncodingPlain:
-				return decodePlainByteArray(b)
+				return encoding.DecodePlainByteArray(b)
 			case EncodingDeltaLengthByteArray:
-				return decodeDeltaLengthByteArray(b)
+				return encoding.DecodeDeltaLengthByteArray(b)
 			default:
 				return nil, fmt.Errorf("unsupported encoding  %s for byte_array", enc)
 			}
@@ -120,7 +122,7 @@ func (f *File) ReadColumn(col string) (ColumnValues, error) {
 			flat = ByteArrayValues(out)
 		}
 	case TypeBoolean:
-		out, off, err := collect(f, chunks, maxDefLevel, maxRepLevel, func(b []byte, _ Encoding, count int) ([]bool, error) { return decodePlainBoolean(b, count) })
+		out, off, err := collect(f, chunks, maxDefLevel, maxRepLevel, func(b []byte, _ Encoding, count int) ([]bool, error) { return encoding.DecodePlainBoolean(b, count) })
 		if err != nil {
 			return nil, err
 		}
@@ -183,7 +185,7 @@ func collect[T any](f *File, chunks []ColumnChunk, maxDefLevel, maxRepLevel int6
 
 			defLevels := make([]int64, defCount)
 			if maxDefLevel > 0 {
-				defLevels, err = decodeRLE(defLevelBytes, defBitWidth, defCount)
+				defLevels, err = encoding.DecodeRLE(defLevelBytes, defBitWidth, defCount)
 				if err != nil {
 					return nil, nil, err
 				}
@@ -191,7 +193,7 @@ func collect[T any](f *File, chunks []ColumnChunk, maxDefLevel, maxRepLevel int6
 
 			repLevels := make([]int64, repCount)
 			if maxRepLevel > 0 {
-				repLevels, err = decodeRLE(repLevelBytes, repBitWidth, repCount)
+				repLevels, err = encoding.DecodeRLE(repLevelBytes, repBitWidth, repCount)
 				if err != nil {
 					return nil, nil, err
 				}
@@ -207,7 +209,7 @@ func collect[T any](f *File, chunks []ColumnChunk, maxDefLevel, maxRepLevel int6
 					return nil, nil, fmt.Errorf("column %q: dictionary-encoded page with no dictionary", colName)
 				}
 				bitWidth := int(valueBytes[0])
-				indices, err := decodeRLE(valueBytes[1:], bitWidth, storedCount)
+				indices, err := encoding.DecodeRLE(valueBytes[1:], bitWidth, storedCount)
 				if err != nil {
 					return nil, nil, err
 				}
@@ -227,7 +229,7 @@ func collect[T any](f *File, chunks []ColumnChunk, maxDefLevel, maxRepLevel int6
 				}
 			}
 
-			expandedValues, chunkOffsets, err := applyLevels(repLevels, defLevels, decodedBytes, maxDefLevel, maxRepLevel, int(pageHeader.NumRows))
+			expandedValues, chunkOffsets, err := encoding.ApplyLevels(repLevels, defLevels, decodedBytes, maxDefLevel, maxRepLevel, int(pageHeader.NumRows))
 			if err != nil {
 				return nil, nil, err
 			}

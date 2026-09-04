@@ -1,4 +1,4 @@
-package sawdust
+package encoding
 
 import (
 	"strings"
@@ -84,7 +84,7 @@ func TestDecodeRLE(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := decodeRLE(tt.input, tt.bitWidth, tt.count)
+			got, err := DecodeRLE(tt.input, tt.bitWidth, tt.count)
 			if (err != nil) != tt.wantErr {
 				t.Fatalf("wantErr: %v, got err: %v", tt.wantErr, err)
 			}

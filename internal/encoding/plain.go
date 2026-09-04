@@ -1,4 +1,4 @@
-package sawdust
+package encoding
 
 import (
 	"encoding/binary"
@@ -6,7 +6,7 @@ import (
 	"math"
 )
 
-func decodePlainInt64(b []byte) ([]int64, error) {
+func DecodePlainInt64(b []byte) ([]int64, error) {
 	if len(b)%8 != 0 {
 		return nil, fmt.Errorf("expected total bytes to be a multiple of 8, but got %d", len(b))
 	}
@@ -20,7 +20,7 @@ func decodePlainInt64(b []byte) ([]int64, error) {
 	return nums, nil
 }
 
-func decodePlainDouble(b []byte) ([]float64, error) {
+func DecodePlainDouble(b []byte) ([]float64, error) {
 	if len(b)%8 != 0 {
 		return nil, fmt.Errorf("expected total bytes to be a multiple of 8, but got %d", len(b))
 	}
@@ -34,7 +34,7 @@ func decodePlainDouble(b []byte) ([]float64, error) {
 	return nums, nil
 }
 
-func decodePlainBoolean(b []byte, count int) ([]bool, error) {
+func DecodePlainBoolean(b []byte, count int) ([]bool, error) {
 	if count < 0 {
 		return nil, fmt.Errorf("count must not be negative, got %d", count)
 	}
@@ -58,7 +58,7 @@ func decodePlainBoolean(b []byte, count int) ([]bool, error) {
 // The returned slices alias b rather than copying it. Mutating b changes the
 // returned values, and retaining any one of them keeps b's whole backing array
 // alive.
-func decodePlainByteArray(b []byte) ([][]byte, error) {
+func DecodePlainByteArray(b []byte) ([][]byte, error) {
 	var out [][]byte
 
 	cursor := 0

@@ -1,4 +1,4 @@
-package sawdust
+package encoding
 
 import (
 	"fmt"
@@ -6,7 +6,7 @@ import (
 	"github.com/sevaergdm/sawdust/internal/thrift"
 )
 
-func decodeDeltaLengthByteArray(b []byte) ([][]byte, error) {
+func DecodeDeltaLengthByteArray(b []byte) ([][]byte, error) {
 	lengths, consumed, err := decodeDeltaBinary(b)
 	if err != nil {
 		return nil, err

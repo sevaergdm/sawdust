@@ -1,4 +1,6 @@
-package sawdust
+package encoding
+
+func ptr[T any](v T) *T { return &v }
 
 func genAlt(n int) []int64 {
 	out := make([]int64, 0, n)

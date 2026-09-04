@@ -1,4 +1,4 @@
-package sawdust
+package encoding
 
 import (
 	"strings"

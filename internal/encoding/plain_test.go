@@ -1,4 +1,4 @@
-package sawdust
+package encoding
 
 import (
 	"strings"
@@ -55,7 +55,7 @@ func TestDecodePlainByteArray(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := decodePlainByteArray(tt.input)
+			got, err := DecodePlainByteArray(tt.input)
 			if (err != nil) != tt.wantErr {
 				t.Fatalf("wantErr: %v, got err: %v", tt.wantErr, err)
 			}
@@ -91,7 +91,7 @@ func TestDecodePlainInt64(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := decodePlainInt64(tt.input)
+			got, err := DecodePlainInt64(tt.input)
 			if (err != nil) != tt.wantErr {
 				t.Fatalf("wantErr: %v, got err: %v", tt.wantErr, err)
 			}
@@ -121,7 +121,7 @@ func TestDecodePlainDouble(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := decodePlainDouble(tt.input)
+			got, err := DecodePlainDouble(tt.input)
 			if (err != nil) != tt.wantErr {
 				t.Fatalf("wantErr: %v, got err: %v", tt.wantErr, err)
 			}
@@ -185,7 +185,7 @@ func TestDecodePlainBoolean(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := decodePlainBoolean(tt.input, tt.count)
+			got, err := DecodePlainBoolean(tt.input, tt.count)
 			if (err != nil) != tt.wantErr {
 				t.Fatalf("wantErr: %v, got err: %v", tt.wantErr, err)
 			}

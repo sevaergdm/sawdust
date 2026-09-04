@@ -1,4 +1,4 @@
-package sawdust
+package encoding
 
 import (
 	"strings"
@@ -172,7 +172,7 @@ func TestApplyLevels(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			gotColumnValues, gotOffsets, err := applyLevels(tt.repLevels, tt.defLevels, tt.values, tt.maxDefLevel, tt.maxRepLevel, tt.numRows)
+			gotColumnValues, gotOffsets, err := ApplyLevels(tt.repLevels, tt.defLevels, tt.values, tt.maxDefLevel, tt.maxRepLevel, tt.numRows)
 			if (err != nil) != tt.wantErr {
 				t.Fatalf("wantErr: %v, got err: %v", tt.wantErr, err)
 			}
@@ -202,7 +202,7 @@ func TestApplyLevelsString(t *testing.T) {
 	want := []*string{ptr(string("a")), nil, ptr(string("b")), ptr(string("c")), nil}
 	wantOffsets := seqOffsets(5)
 
-	gotColumnValues, gotOffsets, err := applyLevels(repLevels, defLevels, values, 1, 0, 5)
+	gotColumnValues, gotOffsets, err := ApplyLevels(repLevels, defLevels, values, 1, 0, 5)
 	if err != nil {
 		t.Fatalf("expected no error, but got: %v", err)
 	}

@@ -1,4 +1,4 @@
-package sawdust
+package encoding
 
 import "fmt"
 
@@ -8,7 +8,7 @@ import "fmt"
 //
 // The returned pointers alias values rather than copying it. Mutating values after the call changes
 // the result, and retaining any non-nil pointer keeps the whole values backing array alive.
-func applyLevels[T any](repLevels, defLevels []int64, values []T, maxDefLevel, maxRepLevel int64, numRows int) ([]*T, []int, error) {
+func ApplyLevels[T any](repLevels, defLevels []int64, values []T, maxDefLevel, maxRepLevel int64, numRows int) ([]*T, []int, error) {
 	var elements []*T
 	offsets := make([]int, 0, numRows+1)
 	cursor := 0
